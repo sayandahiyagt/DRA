@@ -19,12 +19,15 @@ import pytest
 from sqlalchemy import text
 
 from dra.proof_corpus import (
+    HNSW_INDEX_NAME,
     ProofConfig,
+    _vec_str,
     build_query_set,
     compute_recall,
     create_hnsw_index,
     drop_hnsw_index,
     generate_corpus,
+    hnsw_explain_plan,
     load_corpus,
     reset_corpus,
     run_exact,
@@ -34,16 +37,17 @@ from dra.proof_corpus import (
     workload_invalidate,
     workload_mutate,
 )
+from dra.db import engine
 from tests._db import DB, async_session
 
 pytestmark = DB
 
 
 TEST_CFG = ProofConfig(
-    n_vectors=5000,
+    n_vectors=12000,
     dim=384,
     k=10,
-    n_queries=100,
+    n_queries=64,
     recall_target=0.90,
     latency_hnsw_p95_ms=50.0,
     latency_exact_p95_ms=200.0,
@@ -134,6 +138,62 @@ def test_hnsw_latency_meets_slo():
         finally:
             await drop_hnsw_index()
         assert result["p95_ms"] < TEST_CFG.latency_hnsw_p95_ms
+    asyncio.run(run())
+
+
+def test_hnsw_index_is_engaged():
+    """The HNSW index is actually selected by the planner (Defect 4).
+
+    Guards against the operator/opclass mismatch that caused the proof to seq
+    scan instead of using HNSW. Two airtight properties, both verified directly
+    against the DB:
+
+    1. EXPLAIN at a low ``ef_search`` contains ``idx_proof_corpus_hnsw`` — the
+       planner picks the HNSW index, proving the nearest-neighbor operator
+       (``<->``) matches the ``vector_l2_ops`` index opclass (R21). With the
+       buggy inner-product ``<#>`` the plan is a Bitmap/Heap scan and the
+       index name never appears.
+    2. recall@10 at low ``ef_search`` is strictly less than 1.0 and strictly
+       less than recall at high ``ef_search`` — the signature of real HNSW
+       approximation. With the ``<#>`` bug recall is flat 1.0 at every
+       ``ef_search`` because retrieval degenerates to exact sequential scan.
+    """
+
+    async def run():
+        await reset_corpus()
+        rows = _small_corpus()
+        await load_corpus(rows)
+        query_set = build_query_set(
+            rows, k=TEST_CFG.k, n_queries=TEST_CFG.n_queries, seed=TEST_CFG.seed + 1
+        )
+        exact = await run_exact(query_set, k=TEST_CFG.k)
+        await create_hnsw_index(m=TEST_CFG.hnsw_m, ef_construction=TEST_CFG.hnsw_ef_construction)
+        try:
+            # Property 1: the HNSW index is selected at low ef_search.
+            qvec, tid, pid, _ = query_set[0]
+            plan = await hnsw_explain_plan(
+                qvec, tid, pid, k=TEST_CFG.k, ef_search=40, iterative=True
+            )
+            assert HNSW_INDEX_NAME in plan, (
+                f"HNSW index not selected — plan used a non-HNSW path:\n{plan}"
+            )
+
+            # Property 2: recall varies with ef_search (genuine approximation).
+            recalls = {}
+            for ef in TEST_CFG.ef_search_sweep:
+                result = await run_hnsw(query_set, k=TEST_CFG.k, ef_search=ef, iterative=True)
+                recalls[ef] = compute_recall(exact["ids"], result["ids"], TEST_CFG.k)
+            low = recalls[min(TEST_CFG.ef_search_sweep)]
+            high = recalls[max(TEST_CFG.ef_search_sweep)]
+            assert low < 1.0, (
+                f"recall at low ef_search is 1.0 — HNSW not actually approximating: {recalls}"
+            )
+            assert low < high, (
+                f"recall does not vary with ef_search (flat {low}) — HNSW not engaged: {recalls}"
+            )
+        finally:
+            await drop_hnsw_index()
+        await reset_corpus()
     asyncio.run(run())
 
 
@@ -256,11 +316,18 @@ def test_workload_stale_vector_exclusion():
     asyncio.run(run())
 
 
-def test_proof_report_pass_fail():
-    """End-to-end run_proof emits a machine-checkable report with 5 triggers."""
+def test_proof_report_pass_fail(tmp_path):
+    """End-to-end run_proof emits a machine-checkable report with 5 triggers.
+
+    Writes to a per-test temp path so the canonical ``proof_report.json`` is
+    never clobbered by the test run (Defect 3: the 5000-vector TEST_CFG wrote a
+    FAIL report to the repo root).
+    """
 
     async def run():
-        report = await run_proof(cfg=TEST_CFG, write=True)
+        report = await run_proof(
+            cfg=TEST_CFG, write=True, report_path=str(tmp_path / "proof_report.json")
+        )
         return report
     report = asyncio.run(run())
 
@@ -268,17 +335,18 @@ def test_proof_report_pass_fail():
     assert len(report["reversal_triggers"]) == 5
     for name, trig in report["reversal_triggers"].items():
         assert trig["pass"] in (True, False), f"trigger {name} has no pass/fail value"
-    # Report files exist on disk
-    import os
-
-    assert os.path.exists("proof_report.json")
-    assert os.path.exists("proof_report.md")
+    # Report files exist on the temp path
+    assert (tmp_path / "proof_report.json").exists()
+    assert (tmp_path / "proof_report.md").exists()
 
     # Machine-checkable assertion from §10 acceptance criteria
-    with open("proof_report.json") as f:
+    with open(tmp_path / "proof_report.json") as f:
         r = json.load(f)
     assert r["verdict"] in ("PASS", "FAIL")
     assert len(r["reversal_triggers"]) == 5
+
+    # Leave the DB clean: run_proof leaves the HNSW index built and the corpus
+    # loaded; drop the index and reset so subsequent runs start clean.
     asyncio.run(_cleanup())
 
 

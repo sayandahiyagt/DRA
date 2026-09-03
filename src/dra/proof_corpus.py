@@ -33,7 +33,7 @@ from typing import Any, Sequence
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from dra.db import DATABASE_URL, engine
+from dra.db import DATABASE_URL, can_connect, engine
 from dra.publish import async_session
 
 HNSW_INDEX_NAME = "idx_proof_corpus_hnsw"
@@ -359,7 +359,7 @@ async def run_exact(
                 f"AND superseded_by IS NULL "
                 f"AND (valid_to IS NULL OR valid_to > now()) "
                 f"AND tenant_id = :tid AND project_id = :pid "
-                f"ORDER BY embedding <#> '{_vec_str(qvec)}' "
+                f"ORDER BY embedding <-> '{_vec_str(qvec)}' "
                 f"LIMIT :k"
             )
             result = await conn.execute(text(sql), {"tid": tid, "pid": pid, "k": k})
@@ -441,7 +441,7 @@ async def run_hnsw(
                 f"AND superseded_by IS NULL "
                 f"AND (valid_to IS NULL OR valid_to > now()) "
                 f"AND tenant_id = :tid AND project_id = :pid "
-                f"ORDER BY embedding <#> '{_vec_str(qvec)}' "
+                f"ORDER BY embedding <-> '{_vec_str(qvec)}' "
                 f"LIMIT :k"
             )
             result = await conn.execute(text(sql), {"tid": tid, "pid": pid, "k": k})
@@ -473,6 +473,46 @@ def compute_recall(exact_ids: list[list[str]], hnsw_ids: list[list[str]], k: int
         intersection = len(set(ex) & set(hx))
         sum_recall += intersection / k
     return sum_recall / total
+
+
+async def hnsw_explain_plan(
+    query_vec: Sequence[float],
+    tenant_id: str,
+    project_id: str,
+    k: int = 10,
+    ef_search: int = 40,
+    iterative: bool = True,
+) -> str:
+    """Return the EXPLAIN (text) for a single filtered HNSW ANN query.
+
+    Used by the test suite to assert the HNSW index is actually selected (the
+    nearest-neighbor operator must match the index opclass — R21). With a
+    mismatched operator (e.g. the inner-product ``<#>`` against a ``vector_l2_ops``
+    index) the planner falls back to a bitmap/seq scan and this plan will NOT
+    contain the HNSW index name.
+    """
+    q = _vec_str(query_vec)
+    iter_supported = iterative and _extversion_supports_iterative(await _get_extversion())
+    async with engine.connect() as conn:
+        statements = [
+            f"SET LOCAL hnsw.ef_search = {ef_search}",
+        ]
+        if iter_supported:
+            statements.append("SET LOCAL hnsw.iterative_scan = relaxed_order")
+        explain_sql = (
+            f"EXPLAIN SELECT id FROM proof_corpus "
+            f"WHERE state IN ('canonical', 'verified') "
+            f"AND superseded_by IS NULL "
+            f"AND (valid_to IS NULL OR valid_to > now()) "
+            f"AND tenant_id = :tid AND project_id = :pid "
+            f"ORDER BY embedding <-> '{q}' "
+            f"LIMIT :k"
+        )
+        for stmt in statements:
+            await conn.execute(text(stmt))
+        result = await conn.execute(text(explain_sql), {"tid": tenant_id, "pid": project_id, "k": k})
+        plan_lines = [str(r[0]) for r in result.fetchall()]
+    return "\n".join(plan_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +630,7 @@ async def workload_mutate(
                 f"WHERE state IN ('canonical', 'verified') "
                 f"AND superseded_by IS NULL "
                 f"AND (valid_to IS NULL OR valid_to > now()) "
-                f"ORDER BY embedding <#> '{_vec_str(qv)}' "
+                f"ORDER BY embedding <-> '{_vec_str(qv)}' "
                 f"LIMIT 10"
             )
             result = await conn.execute(text(sql))
@@ -622,7 +662,7 @@ async def workload_mutate(
                 f"WHERE state IN ('canonical', 'verified') "
                 f"AND superseded_by IS NULL "
                 f"AND (valid_to IS NULL OR valid_to > now()) "
-                f"ORDER BY embedding <#> '{_vec_str(qv)}' "
+                f"ORDER BY embedding <-> '{_vec_str(qv)}' "
                 f"LIMIT 10"
             )
             result = await conn.execute(text(sql))
@@ -664,7 +704,7 @@ async def workload_delete(n: int = 1000, tenant: str | None = None, seed: int = 
                 f"AND superseded_by IS NULL "
                 f"AND (valid_to IS NULL OR valid_to > now()) "
                 f"AND tenant_id = '{tid_t}' "
-                f"ORDER BY embedding <#> '{_vec_str(check_vec)}' "
+                f"ORDER BY embedding <-> '{_vec_str(check_vec)}' "
                 f"LIMIT 50"
             )
             result = await conn.execute(text(sql))
@@ -737,7 +777,7 @@ async def workload_invalidate(invalidate_frac: float = 0.05, seed: int = 333) ->
                 f"AND superseded_by IS NULL "
                 f"AND (valid_to IS NULL OR valid_to > now()) "
                 f"AND tenant_id = '{tid_t}' "
-                f"ORDER BY embedding <#> '{_vec_str(query_vec)}' "
+                f"ORDER BY embedding <-> '{_vec_str(query_vec)}' "
                 f"LIMIT 50"
             )
             result = await conn.execute(text(sql))
@@ -759,7 +799,9 @@ async def workload_invalidate(invalidate_frac: float = 0.05, seed: int = 333) ->
 # ---------------------------------------------------------------------------
 
 
-async def run_proof(cfg: ProofConfig | None = None, write: bool = True) -> dict:
+async def run_proof(
+    cfg: ProofConfig | None = None, write: bool = True, report_path: str = "proof_report.json"
+) -> dict:
     """Run the full §38.2 storage proof and return the report dict.
 
     Steps:
@@ -846,7 +888,7 @@ async def run_proof(cfg: ProofConfig | None = None, write: bool = True) -> dict:
         if iter_supported:
             await conn.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
         for tv in test_vectors:
-            sql = f"SELECT id, tenant_id FROM proof_corpus ORDER BY embedding <#> '{_vec_str(tv)}' LIMIT 50"
+            sql = f"SELECT id, tenant_id FROM proof_corpus ORDER BY embedding <-> '{_vec_str(tv)}' LIMIT 50"
             result = await conn.execute(text(sql))
             top_ids = [(str(r[0]), str(r[1])) for r in result.fetchall()]
             if not top_ids:
@@ -992,7 +1034,7 @@ async def run_proof(cfg: ProofConfig | None = None, write: bool = True) -> dict:
     }
 
     if write:
-        write_report(report)
+        write_report(report, path=report_path)
 
     return report
 

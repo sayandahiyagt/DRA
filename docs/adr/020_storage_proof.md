@@ -28,9 +28,11 @@
   reindex latency >= budget.
 - **Consequences:**
   - Positive: pgvector HNSW with `iterative_scan = relaxed_order` (pgvector
-    0.8.6) achieves recall = 1.0 and p95 < 7 ms at `ef_search=320` on 25k
-    vectors. REINDEX of the HNSW index after 1,000-vector mutation batch
-    completes in ~4.3 s (well within 10 s budget).
+    0.8.6) achieves recall = 1.0 and p95 < 4 ms at `ef_search=320` on 25k
+    vectors, with recall rising from ~0.90 (`ef_search=40`) to 1.0
+    (`ef_search=320`) — the expected HNSW accuracy/latency tradeoff. REINDEX
+    of the HNSW index after a 1,000-vector mutation batch completes in ~4.2 s
+    (well within the 10 s budget).
   - Neutral: pgvector 0.8.x supports incremental HNSW inserts, so newly
     inserted vectors are searchable immediately (no staleness without reindex
     for single inserts). This is a behavioral note, not a code defect.
@@ -43,10 +45,10 @@
 | Trigger | Measured value | Threshold | Result | Reversal triggered? |
 |---|---|---|---|---|
 | corpus_vector_count | 25,000 | >= 10,000 | PASS | no |
-| p95_retrieval_latency | 6.672 ms | < 50 ms | PASS | no |
+| p95_retrieval_latency | 3.696 ms | < 50 ms | PASS | no |
 | multi_tenant_isolation | 0 | 0 leakage | PASS | no |
 | filtered_ann_recall | 1.0 | >= 0.90 | PASS | no |
-| write_throughput | 4,349.7 ms | < 10,000 ms | PASS | no |
+| write_throughput | 4,171.3 ms | < 10,000 ms | PASS | no |
 
 **Overall verdict: PASS** — no ADR-003 reversal trigger fired.
 
@@ -56,23 +58,29 @@
 - **Corpus:** 25,000 vectors, dim=384, 3 tenants, 2 projects/tenant,
   5 topics/project, seed=42. Tenant directions use 128-dim block anchors
   (dims 0–127, 128–255, 256–383).
-- **Exact (sequential) retrieval:** p50=3.9 ms, p95=6.5 ms (200 filtered
+- **Exact (sequential) retrieval:** p50=3.539 ms, p95=3.913 ms (200 filtered
   queries, k=10, `SET LOCAL enable_indexscan = off` per R21).
-- **HNSW (m=16, ef_construction=200):**
+- **HNSW (m=16, ef_construction=200):** recall rises with `ef_search` — the
+  signature of a genuinely engaged approximate index (the operator `<->`
+  matches the `vector_l2_ops` index opclass; R21).
 
   | ef_search | recall@10 | p50 (ms) | p95 (ms) |
   |-----------|-----------|----------|----------|
-  | 40        | 1.0000    | 3.72     | 4.52     |
-  | 80        | 1.0000    | 3.77     | 5.70     |
-  | 160       | 1.0000    | 3.67     | 4.28     |
-  | 320       | 1.0000    | 4.40     | 6.67     |
+  | 40        | 0.8960    | 1.263    | 2.064    |
+  | 80        | 0.9740    | 1.470    | 2.131    |
+  | 160       | 0.9965    | 1.588    | 2.353    |
+  | 320       | 1.0000    | 3.293    | 3.696    |
 
-  Best: ef_search=320, recall=1.0000, p95=6.67 ms.
+  Best: ef_search=320, recall=1.0000, p95=3.696 ms. At ef_search=40 the index
+  is genuinely approximate (recall 0.896 < 1.0); HNSW p95 (~1.3–3.7 ms) is
+  consistently below exact p95 (3.913 ms).
 - **Filtered recall (per tenant):** tenant_0=1.0, tenant_1=1.0, tenant_2=1.0.
 - **Tenant isolation (unfiltered ANN, top-50):** 0 cross-tenant leaks.
 - **Workloads:**
-  - Mutation: 1,000 vectors inserted; incremental HNSW inserts supported
-    (pgvector 0.8+); REINDEX latency=4,349.7 ms; recall restored post-reindex.
+  - Mutation: 1,000 vectors inserted; pgvector 0.8.x supports incremental HNSW
+    inserts, so `detected_stale_before_reindex = false` (new vectors were
+    immediately searchable); REINDEX latency=4,171.3 ms; recall restored
+    post-reindex.
   - Deletion: 1,000 rows deleted; 0 ghost IDs returned.
   - Stale invalidation: 1,250 rows invalidated to `state='superseded'` +
-    `superseded_by` set; 0 leaked stale IDs; query latency=41.9 ms.
+    `superseded_by` set; 0 leaked stale IDs; query latency=27.6 ms.
