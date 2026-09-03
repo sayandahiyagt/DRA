@@ -14,7 +14,9 @@ Public API
   whole transaction back, so partial publishes never leave canonical
   orphans (ADR-013).
 - :func:`stage_raw_capture` / :func:`stage_claim` / :func:`add_prov_edge`
-  — ergonomic helpers that insert staged rows within a bundle.
+   — ergonomic helpers that insert staged rows within a bundle.
+- :func:`stage_implementation_entity` — stage a code/entity reference
+   discovered by an investigator (dra#23, §13.4).
 """
 
 from __future__ import annotations
@@ -305,6 +307,67 @@ async def stage_evidence_unit(
             "art": str(artifact_id),
             "loc": _json(locator),
             "excerpt": metadata.get("excerpt") if metadata else None,
+            "hash": content_hash,
+            "act": str(activity_id),
+            "state": state,
+            "meta": _json(metadata),
+        },
+    )
+    return entity_id
+
+
+async def stage_implementation_entity(
+    session: AsyncSession,
+    bundle_id: UUID,
+    activity_id: UUID,
+    repo_source_id: UUID,
+    kind: str,
+    *,
+    path: str | None = None,
+    symbol_name: str | None = None,
+    commit_sha: str | None = None,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    signature: str | None = None,
+    content_hash: str | None = None,
+    state: str = "staged",
+    metadata: dict[str, Any] | None = None,
+) -> UUID:
+    """Stage an implementation entity (dra#23, §13.4).
+
+    ``implementation_entity`` links a repo source identity to a concrete code
+    reference (file, symbol, commit, line span, signature) discovered by an
+    investigator.  It is a lineage-domain table with its own ``state`` column
+    (added by ``0005_implementation_entity_state``) so it participates in the
+    staged->canonical atomic commit (ADR-013) like
+    raw_capture / derived_artifact / evidence_unit / claim.
+
+    The primary key is ``id`` (a UUID prov_entity mirror), NOT ``content_hash``,
+    so there is no ``ON CONFLICT`` upsert — a plain INSERT matches the
+    evidence_unit / claim pattern.
+    """
+    entity_id = await _insert_prov_entity(
+        session, bundle_id, "implementation_entity", activity_id,
+        content_hash, None, state, metadata,
+    )
+    await session.execute(
+        text(
+            "INSERT INTO implementation_entity (id, repo_source_id, kind, "
+            "path, symbol_name, commit_sha, line_start, line_end, "
+            "signature, content_hash, produced_by_activity, state, metadata) "
+            "VALUES (:id, :src, :kind, :path, :sym, :sha, :start, :end, "
+            ":sig, :hash, :act, :state, :meta)"
+        ),
+        {
+            "id": str(entity_id),
+            "src": str(repo_source_id),
+            "kind": kind,
+            "path": path,
+            "sym": symbol_name,
+            "sha": commit_sha,
+            "start": line_start,
+            "end": line_end,
+            "sig": signature,
             "hash": content_hash,
             "act": str(activity_id),
             "state": state,
@@ -707,6 +770,7 @@ _DOMAIN_STATE_TABLES = (
     ("raw_capture",       "raw_capture",       "pe.content_hash = raw_capture.content_hash"),
     ("derived_artifact",  "derived_artifact",  "pe.id = derived_artifact.id"),
     ("evidence_unit",     "evidence_unit",     "pe.id = evidence_unit.id"),
+    ("implementation_entity", "implementation_entity", "pe.id = implementation_entity.id"),
     ("claim",             "claim",             "pe.id = claim.id"),
 )
 
