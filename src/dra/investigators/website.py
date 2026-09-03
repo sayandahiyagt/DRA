@@ -103,6 +103,31 @@ class _SkipStep(Exception):
     """Raised by a ladder rung that produced no acquirable content."""
 
 
+class _OriginThrottle:
+    """Per-origin rate-limit throttle derived from RFC 9309 Crawl-delay.
+
+    Enforces a minimum interval (seconds) between acquisitions against the same
+    origin, so the investigator observes the ``rate_limit`` reported by the
+    robots policy (§22 / ADR-015: "observe rate limits").  A non-positive or
+    absent interval is a no-op (the default for offline tests).
+    """
+
+    def __init__(self) -> None:
+        self._last: dict[str, float] = {}
+
+    async def wait(self, origin: str, interval: float | None) -> None:
+        if not interval or interval <= 0:
+            return
+        last = self._last.get(origin)
+        now = time.monotonic()
+        if last is not None:
+            remaining = interval - (now - last)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        self._last[origin] = time.monotonic()
+
+
+
 # ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
@@ -189,6 +214,7 @@ class WebsiteInvestigator:
         )
         self.har_authorized = har_authorized
         self.concurrency = max(1, concurrency)
+        self._throttle = _OriginThrottle()
 
     # -- public API ---------------------------------------------------------
 
@@ -280,6 +306,9 @@ class WebsiteInvestigator:
                 latency_ms=round((time.monotonic() - t0) * 1000, 3),
             )
             return
+
+        # Observe the RFC 9309 Crawl-delay rate limit (best-effort, per-origin).
+        await self._throttle.wait(origin, policy["rate_limit"])
 
         await self._record_crawl_manifest_db(
             ctx, url, origin, "attempted", "policy_gate", None
