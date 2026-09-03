@@ -29,3 +29,7 @@ alembic/versions/__pycache__/
 .idea/
 .vscode/
 .DS_Store
+
+# §38.2 storage proof generated artifacts
+proof_report.json
+proof_report.md
