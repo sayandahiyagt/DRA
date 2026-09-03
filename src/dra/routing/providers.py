@@ -143,6 +143,28 @@ class BrowserProvider(Protocol):
         """Close the browser session."""
         ...
 
+    async def accessibility_snapshot(self, session_id: str) -> str:
+        """Return the AX tree as XML text (§11.4 escalation step 5)."""
+        ...
+
+    async def interact(self, session_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        """Perform a read-only controlled interaction (step 6).
+
+        ``action`` is a small descriptor (e.g. ``{"action": "scroll"}`` or
+        ``{"action": "click", "selector": "#x"}``).  Returns a result dict
+        describing any observable state change.  Writes are intentionally
+        constrained — no form side-effects.
+        """
+        ...
+
+    async def network_capture(self, session_id: str, *, capture_har: bool = True) -> bytes:
+        """Return a captured HAR (HTTP Archive) or network log (step 8).
+
+        Authorized + necessary only (§22.2 / §17.1 step 10).  Callers must gate
+        this on an explicit authorization flag before invoking.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Fake (offline) providers — deterministic, fixture-aligned (D1, D5)
@@ -242,6 +264,15 @@ class FakeBrowserProvider:
 
     async def close_session(self, session_id: str) -> None:
         pass
+
+    async def accessibility_snapshot(self, session_id: str) -> str:
+        return "<accessibility><name>fake-browser</name></accessibility>"
+
+    async def interact(self, session_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        return {"action": action.get("action"), "session_id": session_id, "result": "ok"}
+
+    async def network_capture(self, session_id: str, *, capture_har: bool = True) -> bytes:
+        return b'{"log":{"version":"1.2","entries":[]}}'
 
 
 # ---------------------------------------------------------------------------
@@ -370,19 +401,18 @@ def make_providers(
             "content": FakeContentProvider(page_content),
             "browser": FakeBrowserProvider(),
         }
-    # LIVE: real SDKs are stubs — wired only when credentials are present.
+    # LIVE: real SDKs are wired behind env-gated credentials (dra#26).
     if not _creds_reachable():
         raise RuntimeError(
             "ProviderMode.LIVE requested but no provider API key env vars "
             "are set (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, "
             "EXA_API_KEY, PERPLEXITY_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY)."
         )
-    providers: dict[str, Any] = {}
-    # Real SDK wiring is intentionally deferred — part 2/part 5 wire actual
-    # clients through these contracts. The offline proof is the deliverable.
-    for key in ("search", "sitemap", "content", "browser"):
-        providers[key] = _LiveStubProvider(key, mode=mode)
-    return providers
+    from dra.investigators.providers_live import (  # lazy: keep OFFLINE fast
+        make_live_providers,
+    )
+
+    return make_live_providers()
 
 
 @dataclass
@@ -417,4 +447,13 @@ class _LiveStubProvider:
         raise NotImplementedError
 
     async def close_session(self, session_id: str) -> None:
+        raise NotImplementedError
+
+    async def accessibility_snapshot(self, session_id: str) -> str:
+        raise NotImplementedError
+
+    async def interact(self, session_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def network_capture(self, session_id: str, *, capture_har: bool = True) -> bytes:
         raise NotImplementedError

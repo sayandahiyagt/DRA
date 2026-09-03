@@ -491,6 +491,59 @@ async def stage_source_identity(
     return source_id
 
 
+async def stage_crawl_manifest_entry(
+    session: AsyncSession,
+    bundle_id: UUID,
+    activity_id: UUID | None,
+    *,
+    url: str,
+    origin: str,
+    result: str,
+    step: str | None = None,
+    reason: str | None = None,
+    latency_ms: float | None = None,
+    status: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> UUID:
+    """Stage a crawl-manifest entry (§11.4 ladder / RFC 9309 bookkeeping).
+
+    ``web_crawl_manifest`` is a supporting log table (dra#26, migration
+    0007): each acquisition attempt — attempted / skipped / crawled — is
+    recorded here with the step, reason and latency so the investigator's
+    crawl surface is auditable without re-running it.  Skipped (e.g.
+    RFC 9309 robots exclusion) entries carry the skip reason; crawled entries
+    reference the step that succeeded.
+
+    Entries are written in the caller's transaction (typically
+    :class:`~dra.investigators.InvestigatorContext`) so a rolled-back publish
+    also rolls back the manifest.
+    """
+    entry_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO web_crawl_manifest (id, bundle_id, activity_id, "
+            "url, origin, result, step, reason, latency_ms, status, "
+            "attempted_at, metadata) "
+            "VALUES (:id, :bundle, :act, :url, :origin, :result, :step, "
+            ":reason, :lat, :status, now(), :meta)"
+        ),
+        {
+            "id": str(entry_id),
+            "bundle": str(bundle_id),
+            "act": str(activity_id) if activity_id is not None else None,
+            "url": url,
+            "origin": origin,
+            "result": result,
+            "step": step,
+            "reason": reason,
+            "lat": latency_ms,
+            "status": status,
+            "meta": _json(metadata),
+        },
+    )
+    return entry_id
+
+
 async def stage_decision(
     session: AsyncSession,
     bundle_id: UUID,

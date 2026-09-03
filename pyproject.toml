@@ -23,6 +23,24 @@ dependencies = [
 dev = [
   "pytest==8.3.4",
 ]
+# dra#26 investigate extra: real web-acquisition SDKs, env-gated behind
+# ProviderMode.LIVE (credential-gated, skipped without API keys — see
+# dra.routing.providers._creds_reachable and dra.investigators.providers_live).
+#
+# Package names are pinned to the *verified* PyPI names (the original spec
+# listed `exa` — which is a different PyPI project — and `perplexity-sdk`,
+# which does not exist on PyPI; Perplexity has no official SDK).
+investigate = [
+  "exa-py>=1.0",              # Exa AI search/extraction — imports as `exa`
+  "tavily>=1.0",              # Tavily map/crawl/extract
+  "firecrawl>=2.0",            # Firecrawl scrape/crawl/map/extract
+  "playwright>=1.49",          # rendered browser capture (§11.4 steps 4-8)
+]
+# NOTE: ``playwright install chromium`` is an operator-run step — browser
+# binaries are deliberately NOT a canonical dependency (§17.3 non-goal, D3).
+# Perplexity Search is listed in the §17.2 provider matrix but has no official
+# PyPI package; see providers_live.PerplexitySearchClient (lazy import).
+
 
 [project.scripts]
 dra-db-check = "dra.db:main"
