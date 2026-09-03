@@ -699,6 +699,11 @@ dependencies = [
     { name = "pgvector" },
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-c" },
+    { name = "tree-sitter-javascript" },
+    { name = "tree-sitter-python" },
+    { name = "tree-sitter-typescript" },
 ]
 
 [package.optional-dependencies]
@@ -718,6 +723,11 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.4" },
     { name = "sqlalchemy", specifier = "==2.0.41" },
+    { name = "tree-sitter", specifier = "==0.26.0" },
+    { name = "tree-sitter-c", specifier = "==0.24.2" },
+    { name = "tree-sitter-javascript", specifier = "==0.25.0" },
+    { name = "tree-sitter-python", specifier = "==0.25.0" },
+    { name = "tree-sitter-typescript", specifier = "==0.23.2" },
 ]
 
 [[package]]
