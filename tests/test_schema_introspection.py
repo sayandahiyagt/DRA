@@ -49,10 +49,11 @@ EXPECTED_ENUMS = {
     "raw_kind": ["html", "pdf", "repo_snapshot", "text", "image", "xml"],
     "artifact_kind": [
         "parsed", "normalized", "vector_embedding", "summary", "synthesis",
+        "grobid_tei", "docling_document",
     ],
     "activity_type": [
         "acquisition", "parsing", "derivation", "verification",
-        "publication", "synthesis", "human_correction",
+        "publication", "synthesis", "human_correction", "visual_review",
     ],
     "entity_kind": [
         "raw_capture", "derived_artifact", "evidence_unit", "claim",

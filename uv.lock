@@ -697,6 +697,7 @@ dependencies = [
     { name = "langgraph-checkpoint-postgres" },
     { name = "mcp" },
     { name = "pgvector" },
+    { name = "pypdfium2" },
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy" },
 ]
@@ -715,6 +716,7 @@ requires-dist = [
     { name = "langgraph-checkpoint-postgres", specifier = "==3.1.2" },
     { name = "mcp", specifier = "==2.1.1" },
     { name = "pgvector", specifier = "==0.5.0" },
+    { name = "pypdfium2", specifier = "==5.13.0" },
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.4" },
     { name = "sqlalchemy", specifier = "==2.0.41" },
