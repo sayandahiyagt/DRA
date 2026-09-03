@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dra"
+version = "0.1.0"
+description = "Deep research agent: bootstrap scaffold (LangGraph + Postgres/pgvector + Docling/GROBID + MCP)."
+requires-python = ">=3.12"
+dependencies = [
+  "langgraph==1.2.11",
+  "langgraph-checkpoint-postgres==3.1.2",
+  "sqlalchemy==2.0.41",
+  "psycopg[binary]==3.3.5",
+  "pgvector==0.5.0",
+  "docling==2.124.0",
+  "grobid-client-python==0.2.0",
+  "mcp==2.1.1",
+  "alembic==1.19.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+]
+
+[project.scripts]
+dra-db-check = "dra.db:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+package = true
+
+[tool.alembic]
+script_location = "alembic"

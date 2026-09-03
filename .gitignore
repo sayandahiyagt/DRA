@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# uv
+.uv/
+.venv/
+.env
+.env.*
+# (uv.lock is intentionally tracked for reproducible bootstrap)
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Alembic
+alembic/*.db
+alembic/versions/__pycache__/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
