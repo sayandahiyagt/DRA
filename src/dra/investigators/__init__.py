@@ -35,6 +35,7 @@ from dra.publish import (
     stage_crawl_manifest_entry,
     stage_derived_artifact,
     stage_evidence_unit,
+    stage_gap,
     stage_implementation_entity,
     stage_raw_capture,
     stage_source_identity,
@@ -47,6 +48,8 @@ __all__ = [
     "normalize_locator",
     "validate_locator",
     "InvestigatorContext",
+    "create_activity",
+    "stage_gap",
 ]
 
 
@@ -400,6 +403,65 @@ class InvestigatorContext:
             metadata=metadata,
         )
 
+    async def create_activity(
+        self,
+        activity_type: str,
+        *,
+        input_ids: list[str] | None = None,
+        output_ids: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> UUID:
+        """Create a ``prov_activity`` within this bundle, attributed to ``actor``.
+
+        Delegates to :func:`dra.publish.create_activity` with the context's
+        bound session, bundle_id, and actor. Used for activities beyond the
+        default ``acquisition``/``parsing`` (e.g. the §16.2 ``visual_review``
+        activity).
+        """
+        return await create_activity(
+            self._session,
+            self._bundle_id,
+            activity_type,
+            self.actor,
+            input_ids=input_ids,
+            output_ids=output_ids,
+            metadata=metadata,
+        )
+
+    async def stage_gap(
+        self,
+        description: str,
+        severity: str = "medium",
+        *,
+        activity_id: UUID | None = None,
+        topic_id: UUID | None = None,
+        state: str = "staged",
+        metadata: dict[str, Any] | None = None,
+    ) -> UUID:
+        """Stage a gap entity (spec §16.2, §11.9) within this bundle.
+
+        Delegates to :func:`dra.publish.stage_gap` with the context's bound
+        session/bundle_id. Defaults to the parsing activity but accepts an
+        ``activity_id`` override (e.g. the ``visual_review`` activity).
+        """
+        aid = activity_id or self._parsing_activity
+        entity_id = await stage_gap(
+            self._session,
+            self._bundle_id,
+            aid,
+            description,
+            severity,
+            topic_id=topic_id,
+            state=state,
+            metadata=metadata,
+        )
+        await add_prov_edge(
+            self._session,
+            generated_entity_id=entity_id,
+            activity_id=aid,
+        )
+        return entity_id
+
     async def publish(self) -> int:
         """Commit staged rows to canonical (ADR-013).
 
@@ -421,4 +483,6 @@ __all__ = [
     "InvestigatorContext",
     "WebsiteInvestigator",
     "stage_crawl_manifest_entry",
+    "create_activity",
+    "stage_gap",
 ]

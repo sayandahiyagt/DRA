@@ -613,6 +613,52 @@ async def stage_handoff(
     return entity_id
 
 
+async def stage_gap(
+    session: AsyncSession,
+    bundle_id: UUID,
+    activity_id: UUID,
+    description: str,
+    severity: str = "medium",
+    *,
+    topic_id: UUID | None = None,
+    decision_id: UUID | None = None,
+    state: str = "staged",
+    metadata: dict[str, Any] | None = None,
+) -> UUID:
+    """Stage a gap entity (spec §16.2 critical-content verification, §11.9).
+
+    A ``gap`` is a provenance-anchored finding that a parser output could not
+    be reconciled against its visual source (or that parsers disagreed on).
+    The ``gap`` table is a supporting table — like ``handoff_statement`` it
+    carries no ``state`` column of its own; its staged→canonical transition is
+    tracked via ``prov_entity.state`` (gap is excluded from
+    ``_DOMAIN_STATE_TABLES`` in :func:`publish_bundle`, consistent with
+    ``source_identity`` and ``handoff_statement``).
+
+    Returns the new ``prov_entity`` id (the canonical provenance anchor).
+    """
+    entity_id = await _insert_prov_entity(
+        session, bundle_id, "gap", activity_id, None, None, state, metadata,
+    )
+    await session.execute(
+        text(
+            "INSERT INTO gap (id, topic_id, description, severity, "
+            "decision_id, produced_by_activity, metadata) "
+            "VALUES (:id, :topic, :desc, :sev, :dec, :act, :meta)"
+        ),
+        {
+            "id": str(entity_id),
+            "topic": str(topic_id) if topic_id is not None else None,
+            "desc": description,
+            "sev": severity,
+            "dec": str(decision_id) if decision_id is not None else None,
+            "act": str(activity_id),
+            "meta": _json(metadata),
+        },
+    )
+    return entity_id
+
+
 async def add_prov_edge(
     session: AsyncSession,
     *,
