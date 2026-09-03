@@ -27,6 +27,7 @@ dev = [
 [project.scripts]
 dra-db-check = "dra.db:main"
 dra-storage-proof = "dra.proof_corpus:main"
+dra-model-routing-proof = "dra.routing.proof:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
