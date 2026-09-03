@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -44,12 +45,14 @@ from dra.verification_gate import (
     _evidence_stance,
     _is_ugc,
     _check_db_reachable,
+    GateConfig,
     run_verification_proof,
     write_report,
 )
 from tests._db import DB
 from tests._db import async_session as _db_async_session  # re-export parity
 from tests._evidence import ACTOR, reset
+from tests._verification import build_corrupted_artifact, build_misleading_secondary
 
 
 def _h(prefix: str, i: int) -> str:
@@ -628,6 +631,123 @@ def test_verdict_pass_only_when_supported_and_visible():
         assert report["gate_rules"]["entailment"] is False
         assert report["freshness"]["quarantined_claims"] >= 1
     asyncio.run(run())
+
+
+@DB
+def test_misleading_secondary_rejected():
+    """Fixture (a): misleading secondary source (redist_allowed=False, no
+    entailing excerpt) yields unsupported claims — confidence stands but
+    verification_state.supported=False and the misleading evidence is rejected
+    from corroboration (ADR-021 reversal #1: unsupported-confidence-falls)."""
+
+    async def run():
+        await reset()
+        ids = await build_misleading_secondary()
+        await publish_bundle(ids["bundle_id"])
+        report = await run_verification_proof(write=False)
+
+        primary = next(
+            c for c in report["claims"]
+            if c["claim_id"] == str(ids["primary_claim_id"])
+        )
+        secondary = next(
+            c for c in report["claims"]
+            if c["claim_id"] == str(ids["secondary_claim_id"])
+        )
+        # Unsupported: high confidence (0.95) but no entailing evidence excerpt
+        # -> not supported, zero independent corroborations.
+        assert primary["verification_state"]["supported"] is False
+        assert primary["independent_corroborations"] == 0
+        assert primary["verification_state"]["entailment_pass"] is False
+        assert secondary["verification_state"]["supported"] is False
+        # The misleading secondary is rejected from corroboration / canonical
+        # decisions: unsupported confidence did NOT fall (there are unsupported
+        # confident claims), so the gate verdict is FAIL.
+        assert report["config"]["unsupported_confidence_falls"] is False
+        assert report["verdict"] == "FAIL"
+
+    asyncio.run(run())
+
+
+@DB
+def test_corrupted_artifact_fails_entailment():
+    """Fixture (d): a parser-corrupted derived artifact (state='rejected' +
+    corruption metadata) quarantines its downstream claim and fails the
+    deterministic entailment predicate (ADR-021 reversal #1 + rule 5
+    freshness/quarantine)."""
+
+    async def run():
+        await reset()
+        ids = await build_corrupted_artifact()
+        await publish_bundle(ids["bundle_id"])
+        report = await run_verification_proof(write=False)
+
+        claim = next(
+            c for c in report["claims"] if c["claim_id"] == str(ids["claim_id"])
+        )
+        vs = claim["verification_state"]
+        # Rejected/corrupted derived artifact quarantines the claim.
+        assert vs["quarantined"] is True
+        assert vs["staleness"]["quarantined"] is True
+        assert vs["supported"] is False
+        assert vs["entailment_pass"] is False  # corrupted parse breaks entailment
+        assert report["freshness"]["quarantined_claims"] >= 1
+        assert report["verdict"] == "FAIL"
+
+    asyncio.run(run())
+
+
+@DB
+def test_verification_report_pass_end_to_end(tmp_path):
+    """End-to-end: a clean, independent, entailing, non-stale, non-UGC corpus
+    yields PASS with all 5 reversal triggers each a pass/fail boolean, writing
+    the report to tmp_path so the canonical verification_report.json is never
+    clobbered (Defect 3 recurrence guard from dra#15).
+
+    Mirrors ``test_storage_proof.py::test_proof_report_pass_fail``.
+    """
+
+    async def run():
+        await reset()
+        # Clean supported bundle: single repo (non-UGC) source, AFFIRM excerpt,
+        # single independent corroboration.
+        await _build_claim_bundle(
+            [
+                {
+                    "excerpt": AFFIRM,
+                    "source_kind": "repo",
+                    "source_locator": "https://example.com/src",
+                    "access_basis": "public",
+                    "raw_hash": _h("raw", 0),
+                }
+            ],
+            claim_text=CLAIM,
+            claim_confidence=0.8,
+        )
+        report = await run_verification_proof(
+            cfg=GateConfig(write_mutations=False),
+            write=True,
+            report_path=str(tmp_path / "verification_report.json"),
+        )
+        return report
+
+    report = asyncio.run(run())
+
+    assert report["verdict"] == "PASS"
+    rules = report["gate_rules"]
+    assert set(rules) == {
+        "entailment", "no_masquerade", "ugc_controlled",
+        "freshness", "contradictions_visible",
+    }
+    for name, passed in rules.items():
+        assert passed is True, f"trigger {name} not PASS"
+    assert report["config"]["unsupported_confidence_falls"] is True
+    assert report["config"]["contradictions_visible"] is True
+    assert (tmp_path / "verification_report.json").exists()
+    assert (tmp_path / "verification_report.md").exists()
+    # Defect 3 (dra#15) recurrence guard: the canonical repo-root report is
+    # NOT clobbered — the report was written only to tmp_path.
+    assert not Path("verification_report.json").exists()
 
 
 if __name__ == "__main__":
