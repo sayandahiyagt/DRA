@@ -39,6 +39,7 @@ from dra.publish import (
     stage_implementation_entity,
     stage_raw_capture,
     stage_source_identity,
+    stage_user_assertion,
     publish_bundle,
 )
 
@@ -154,6 +155,7 @@ class InvestigatorContext:
     _session: Any = field(default=None, init=False)
     _acquisition_activity: UUID | None = field(default=None, init=False)
     _parsing_activity: UUID | None = field(default=None, init=False)
+    _human_correction_activity_id: UUID | None = field(default=None, init=False)
 
     async def __aenter__(self) -> "InvestigatorContext":
         self._bundle_id = await stage_bundle(
@@ -403,6 +405,61 @@ class InvestigatorContext:
             metadata=metadata,
         )
 
+    async def _human_correction_activity(self) -> UUID:
+        """Return the bundle's single ``human_correction`` prov_activity.
+
+        Lazily creates (and caches) one ``human_correction`` activity on first
+        use so we don't emit a separate activity row per assertion — the
+        assertion_type enum (ADR-017) implies human correction provenance.
+        """
+        if self._human_correction_activity_id is None:
+            self._human_correction_activity_id = await create_activity(
+                self._session, self._bundle_id, "human_correction", self.actor
+            )
+        return self._human_correction_activity_id
+
+    async def stage_user_assertion(
+        self,
+        assertion_type: str,
+        question: str,
+        value: Any | None = None,
+        *,
+        activity_id: UUID | None = None,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        superseded_by: UUID | None = None,
+        disputed_claim_id: UUID | None = None,
+        disputed_decision_id: UUID | None = None,
+        disputed_source_id: UUID | None = None,
+        state: str = "staged",
+        metadata: dict[str, Any] | None = None,
+    ) -> UUID:
+        """Stage a versioned human/maintainer assertion (ADR-017, dra#44).
+
+        Attributes the assertion to a ``human_correction`` activity by default
+        (the activity_type the ``assertion_type`` enum and ADR-017 imply); pass
+        an explicit ``activity_id`` to attribute it differently.  Delegates to
+        :func:`dra.publish.stage_user_assertion` within the bundle's transaction.
+        """
+        if activity_id is None:
+            activity_id = await self._human_correction_activity()
+        return await stage_user_assertion(
+            self._session,
+            self._bundle_id,
+            activity_id,
+            assertion_type,
+            question,
+            value,
+            run_id=run_id,
+            task_id=task_id,
+            superseded_by=superseded_by,
+            disputed_claim_id=disputed_claim_id,
+            disputed_decision_id=disputed_decision_id,
+            disputed_source_id=disputed_source_id,
+            state=state,
+            metadata=metadata,
+        )
+
     async def create_activity(
         self,
         activity_type: str,
@@ -483,6 +540,7 @@ __all__ = [
     "InvestigatorContext",
     "WebsiteInvestigator",
     "stage_crawl_manifest_entry",
+    "stage_user_assertion",
     "create_activity",
     "stage_gap",
 ]
