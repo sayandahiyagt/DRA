@@ -259,6 +259,28 @@ def test_synthesize_tasks_is_deterministic():
     assert task["source"]["bytes"]
 
 
+def test_synthesize_tasks_routes_repo_sources():
+    """A repo source in intent yields a repo-source ResearchTask (no DB)."""
+    from dra.control_plane import _synthesize_tasks
+
+    state = _base_state(
+        run_id="r1",
+        recon_results=[{"perspective": "p", "query": "q: demo", "seen_source_ids": []}],
+        intent={
+            "objective": "comprehend the repo",
+            "sources": [{"kind": "repo", "ref": "/path/to/repo"}],
+        },
+    )
+    tasks = _synthesize_tasks(state)
+    assert len(tasks) == 1
+    (tid, task) = next(iter(tasks.items()))
+    assert task["task_id"] == tid
+    assert task["source"]["kind"] == "repo"
+    assert task["source"]["ref"] == "/path/to/repo"
+    assert task["source_types"] == ["repo"]
+    assert "readme" in task["question"].lower()
+
+
 def test_budget_spend_decreases_remaining():
     from dra.control_plane import _spend, budget_ok
 

@@ -487,6 +487,51 @@ def _synthesize_tasks(state: dict[str, Any]) -> dict[str, Any]:
     recon = state.get("recon_results") or state.get("recon_branches") or []
     run_id = state.get("run_id", "run")
     tasks: dict[str, Any] = {}
+
+    # Route a repo source from the intent to RepositoryInvestigator (dra#24)
+    # through branch_worker. This is the repo-comprehension path: Phase 3 emits a
+    # repo-source ResearchTask whose source.ref drives the real investigation
+    # rather than the synthetic capture fallback. Only the first repo source is
+    # used (single-repo prototype-1 target).
+    sources = intent.get("sources") or []
+    repo_source = next(
+        (s for s in sources if isinstance(s, dict) and s.get("kind") == "repo"), None
+    )
+    if repo_source:
+        task_id = f"task-{run_id}-0"
+        tasks[task_id] = asdict(
+            ResearchTask(
+                task_id=task_id,
+                question="README comprehension: what does this repository do?",
+                parent_question=None,
+                why_it_matters="Repository source from intent requires repo investigation (dra#24).",
+                artifact_type="evidence_unit",
+                source_types=["repo"],
+                dependencies=[],
+                priority=1,
+                breadth=1,
+                depth=1,
+                model_policy={"role": "fact_extraction", "pool": "workhorse"},
+                acceptance_criteria=[
+                    "source_identity version (commit SHA) present",
+                    "raw_capture content_hash present",
+                    "evidence_unit linked to a derived_artifact",
+                    "implementation_entity rows with repo@commit:path:symbol locators",
+                ],
+                verification_policy={"rules": ["38.4"]},
+                stopping_conditions=["evidence staged", "max_attempts=1"],
+                retry_rules={"attempts": 1},
+                cost_envelope=0.5,
+                source={
+                    "kind": "repo",
+                    "ref": repo_source.get("ref"),
+                    "locator": repo_source.get("ref") or "repo:intent",
+                    "version": repo_source.get("version") or "",
+                },
+            )
+        )
+        return tasks
+
     # One capture task per recon perspective -> deterministic, content-addressed
     # evidence so the DB publish/claims/verify pipeline is exercised end-to-end
     # even with no live network source (§11 investigators still run for real
@@ -1210,6 +1255,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_run = sub.add_parser("run", help="Run the research pipeline to completion (requires Postgres).")
     p_run.add_argument("--objective", required=False, help="Intent objective (seeds Phase 1, skips its interrupt).")
+    p_run.add_argument("--repo", metavar="<url|path>", help="Investigate a repository (README comprehension). Seeds a repo source instead of the capture smoke path.")
+    p_run.add_argument("--repo-version", metavar="<sha>", help="Pin a commit SHA for --repo (resolved to HEAD if absent).")
     p_run.add_argument("--budget", type=float, default=10.0, help="Budget envelope in --currency.")
     p_run.add_argument("--currency", default="USD")
     p_run.add_argument("--thread-id", default=None, help="Reuse a run/thread id (resume).")
@@ -1238,7 +1285,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     intent: dict[str, Any] = {}
-    if args.objective:
+    if args.repo:
+        intent = {
+            "objective": args.objective or f"README comprehension of {args.repo}",
+            "sources": [{"kind": "repo", "ref": args.repo, "version": args.repo_version or ""}],
+            "constraints": ["scope:repo-comprehension"],
+        }
+    elif args.objective:
         intent = {"objective": args.objective, "sources": [], "constraints": []}
     thread_id = args.thread_id or uuid.uuid4().hex
     initial: dict[str, Any] = {
