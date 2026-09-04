@@ -17,6 +17,8 @@ Public API
    — ergonomic helpers that insert staged rows within a bundle.
 - :func:`stage_implementation_entity` — stage a code/entity reference
    discovered by an investigator (dra#23, §13.4).
+- :func:`stage_user_assertion` — stage a versioned human/maintainer assertion
+   (ADR-017, dra#44), standalone outside ``entity_kind``.
 """
 
 from __future__ import annotations
@@ -544,6 +546,62 @@ async def stage_crawl_manifest_entry(
     return entry_id
 
 
+async def stage_user_assertion(
+    session: AsyncSession,
+    bundle_id: UUID,
+    activity_id: UUID,
+    assertion_type: str,
+    question: str,
+    value: Any | None = None,
+    *,
+    run_id: str | None = None,
+    task_id: str | None = None,
+    superseded_by: UUID | None = None,
+    disputed_claim_id: UUID | None = None,
+    disputed_decision_id: UUID | None = None,
+    disputed_source_id: UUID | None = None,
+    state: str = "staged",
+    metadata: dict[str, Any] | None = None,
+) -> UUID:
+    """Stage a versioned user/maintainer assertion (ADR-017, dra#44).
+
+    Stands ALONE (no prov_entity row): ``user_assertion`` is deliberately kept
+    outside ``entity_kind`` so the dra#14 introspection contract stays
+    byte-stable.  It is anchored to the provenance graph via
+    ``produced_by_activity`` (-> prov_activity) and, through provenance, its
+    bundle; its ``state`` is flipped to ``canonical`` by :func:`publish_bundle`
+    via a bundle-scoped mirror (see ``_STANDALONE_STATE_TABLES``).
+    """
+    assertion_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO user_assertion (id, bundle_id, run_id, task_id, "
+            "question, value, assertion_type, superseded_by, produced_by_activity, "
+            "disputed_claim_id, disputed_decision_id, disputed_source_id, "
+            "state, metadata) "
+            "VALUES (:id, :b, :run, :task, :q, :val, :typ, :sup, :act, "
+            ":c, :d, :s, :state, :meta)"
+        ),
+        {
+            "id": str(assertion_id),
+            "b": str(bundle_id),
+            "run": run_id,
+            "task": task_id,
+            "q": question,
+            "val": _json(value),
+            "typ": assertion_type,
+            "sup": str(superseded_by) if superseded_by is not None else None,
+            "act": str(activity_id),
+            "c": str(disputed_claim_id) if disputed_claim_id is not None else None,
+            "d": str(disputed_decision_id) if disputed_decision_id is not None else None,
+            "s": str(disputed_source_id) if disputed_source_id is not None else None,
+            "state": state,
+            "meta": _json(metadata),
+        },
+    )
+    return assertion_id
+
+
 async def stage_decision(
     session: AsyncSession,
     bundle_id: UUID,
@@ -755,20 +813,35 @@ async def _publish_bundle_tx(session: AsyncSession, bundle_id: UUID) -> int:
     )
     staged = rows.fetchall()
     if not staged:
-        # Idempotent no-op: an already-fully-published bundle has its entities
-        # in CANONICAL; re-publishing returns the existing canonical count
-        # rather than erroring (ADR-013).
-        canon_row = await session.execute(
-            text(
-                "SELECT count(*) FROM prov_entity WHERE bundle_id = :b "
-                "AND state = 'canonical'"
-            ),
-            {"b": str(bundle_id)},
-        )
-        already = canon_row.scalar_one()
-        if already:
-            return already
-        raise PublishError(f"bundle {bundle_id} has no staged or canonical entities")
+        # Count staged rows in standalone tables (user_assertion) that carry
+        # their own bundle_id + state but NO prov_entity row (ADR-017).  A bundle
+        # staging only such tables has no prov_entity rows, so we must not error
+        # here — fall through to the standalone flip (step 4b).
+        standalone_staged = 0
+        for table in _STANDALONE_STATE_TABLES:
+            srow = await session.execute(
+                text(
+                    f"SELECT count(*) FROM {table} "
+                    "WHERE bundle_id = :b AND state = 'staged'"
+                ),
+                {"b": str(bundle_id)},
+            )
+            standalone_staged += srow.scalar_one()
+        if not standalone_staged:
+            # Idempotent no-op: an already-fully-published bundle has its entities
+            # in CANONICAL; re-publishing returns the existing canonical count
+            # rather than erroring (ADR-013).
+            canon_row = await session.execute(
+                text(
+                    "SELECT count(*) FROM prov_entity WHERE bundle_id = :b "
+                    "AND state = 'canonical'"
+                ),
+                {"b": str(bundle_id)},
+            )
+            already = canon_row.scalar_one()
+            if already:
+                return already
+            raise PublishError(f"bundle {bundle_id} has no staged or canonical entities")
 
     canonical_count = 0
 
@@ -814,6 +887,19 @@ async def _publish_bundle_tx(session: AsyncSession, bundle_id: UUID) -> int:
     #    own ``state`` column (raw_capture, derived_artifact, evidence_unit,
     #    claim) so canonical status is queryable at the domain level too.
     await _mirror_state_canonical(session, bundle_id)
+
+    # 4b. Flip standalone supporting tables (user_assertion) that carry their
+    #    own ``bundle_id`` + ``state`` but NO prov_entity row — these are kept
+    #    outside ``entity_kind`` so the dra#14 byte-stability contract holds
+    #    (ADR-017).  A dedicated bundle-scoped UPDATE, NOT the prov_entity join.
+    for table in _STANDALONE_STATE_TABLES:
+        await session.execute(
+            text(
+                f"UPDATE {table} SET state = 'canonical' "
+                "WHERE bundle_id = :b AND state = 'staged'"
+            ),
+            {"b": str(bundle_id)},
+        )
 
     if updated != canonical_count:
         raise PublishError(
@@ -872,6 +958,13 @@ _DOMAIN_STATE_TABLES = (
     ("implementation_entity", "implementation_entity", "pe.id = implementation_entity.id"),
     ("claim",             "claim",             "pe.id = claim.id"),
 )
+
+# Standalone supporting tables with their own ``bundle_id`` + ``state`` but NO
+# ``prov_entity`` row — kept outside ``entity_kind`` for the dra#14
+# byte-stability contract (ADR-017).  Flipped to canonical via a dedicated
+# bundle-scoped UPDATE in :func:`_publish_bundle_tx`, not via the
+# ``prov_entity`` join used by ``_DOMAIN_STATE_TABLES``.
+_STANDALONE_STATE_TABLES = ("user_assertion",)
 
 
 async def _mirror_state_canonical(session: AsyncSession, bundle_id: UUID) -> None:

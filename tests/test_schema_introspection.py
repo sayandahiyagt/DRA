@@ -38,6 +38,7 @@ EXPECTED_TABLES = [
     "decision",
     "gap",
     "handoff_statement",
+    "user_assertion",
 ]
 
 EXPECTED_ENUMS = {
@@ -65,6 +66,14 @@ EXPECTED_ENUMS = {
     "impl_kind": ["file", "symbol", "algorithm", "interface", "api"],
     "gap_severity": ["low", "medium", "high", "critical"],
     "agent_kind": ["human", "model", "tool", "organization"],
+    "assertion_type": [
+        "USER_PREFERENCE",
+        "USER_CONSTRAINT",
+        "USER_ASSERTION",
+        "MAINTAINER_ASSERTION",
+        "USER_CORRECTION",
+        "USER_ACCEPTED_RISK",
+    ],
 }
 
 # table -> a column that must appear in its primary key
@@ -109,6 +118,12 @@ KEY_FKS = [
     ("gap", "produced_by_activity", "prov_activity"),
     ("handoff_statement", "decision_id", "decision"),
     ("handoff_statement", "produced_by_activity", "prov_activity"),
+    ("user_assertion", "bundle_id", "prov_bundle"),
+    ("user_assertion", "produced_by_activity", "prov_activity"),
+    ("user_assertion", "superseded_by", "user_assertion"),
+    ("user_assertion", "disputed_claim_id", "claim"),
+    ("user_assertion", "disputed_decision_id", "decision"),
+    ("user_assertion", "disputed_source_id", "source_identity"),
 ]
 
 
