@@ -33,3 +33,7 @@ alembic/versions/__pycache__/
 # §38.2 storage proof generated artifacts
 proof_report.json
 proof_report.md
+
+# §38.1 control-plane bake-off prototype (dra#37) — non-canonical, gitignored
+# from the package build. See bake-off/README.md.
+bake-off/
