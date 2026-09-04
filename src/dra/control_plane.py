@@ -53,6 +53,16 @@ B_COMMIT_FAILED = "COMMIT_FAILED"
 B_BLOCKED = "BLOCKED"
 B_COMPLETE = "COMPLETE"
 
+# Interview strategies for the §38.5 A/B (dra#45).
+#   progressive : existing shallow-breadth p1 interrupt / recon p2 / p4 clarification loop
+#   exhaustive  : p1 interrupts with the full §9.1 Stage-A questionnaire; p4 is a no-op
+#   minimal     : p1 interrupts for an objective only; p4 is skipped
+STRATEGY_PROGRESSIVE = "progressive"
+STRATEGY_EXHAUSTIVE = "exhaustive"
+STRATEGY_MINIMAL = "minimal"
+_VALID_STRATEGIES = (STRATEGY_PROGRESSIVE, STRATEGY_EXHAUSTIVE, STRATEGY_MINIMAL)
+_DEFAULT_STRATEGY = STRATEGY_PROGRESSIVE
+
 NUM_PHASES = 15  # p0 .. p14
 
 # Per-investigator cost units (§31 cost accounting — symbolic, budget-tracked).
@@ -259,6 +269,7 @@ class ControlState(TypedDict, total=False):
     require_db: bool
     live_investigators: bool
     actor: Annotated[dict[str, Any], _merge_dict]
+    strategy: str
 
 
 def _budget(state: dict[str, Any]) -> dict[str, Any]:
@@ -369,6 +380,7 @@ async def p0(state: dict[str, Any]) -> dict[str, Any]:
             "config_snapshot": snapshot,
             "budget": _budget(state),
             "actor": state.get("actor", _ACTOR),
+            "strategy": state.get("strategy") or _DEFAULT_STRATEGY,
         }
 
     budget = _budget(state)  # honors an injected envelope (e.g. budget test)
@@ -387,7 +399,98 @@ async def p0(state: dict[str, Any]) -> dict[str, Any]:
         "claims": state.get("claims", []),
         "gaps": state.get("gaps", []),
         "decisions": state.get("decisions", []),
+        "strategy": state.get("strategy") or _DEFAULT_STRATEGY,
     }
+
+
+# ---------------------------------------------------------------------------
+# Interview strategies — §38.5 A/B parameterisation (dra#45)
+# ---------------------------------------------------------------------------
+
+_EXHAUSTIVE_QUESTIONNAIRE: tuple[str, ...] = (
+    "artifact/product: what are we building?",
+    "target: who is the intended user/workflow and deployment environment?",
+    "perf/quality constraints: latency, throughput, SLA targets?",
+    "privacy/security/licensing constraints: regulatory or license obligations?",
+    "reference examples: closest existing systems or prior art?",
+    "original-vs-interop: green-field or integrate with existing stack?",
+    "success criteria: how do we know it worked?",
+    "non-goals: what is explicitly out of scope?",
+    "time/cost boundaries: deadline and budget envelope?",
+    "tradeoffs: which dimensions are acceptable to relax?",
+    "acceptance: how will the result be reviewed?",
+)
+
+
+async def _record_human_assertions(
+    state: dict[str, Any],
+    answers: list[tuple[str, Any]],
+    run_id: str,
+    task_id: str,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    """Record human-provided answers as versioned ``user_assertion`` rows.
+
+    Each ``(question, value)`` pair is staged as ``USER_CONSTRAINT``; when the
+    value revises a prior *canonical* assertion for the same ``(run_id, question)``
+    it is staged as ``USER_CORRECTION`` linked via ``superseded_by`` so the prior
+    row is left intact (history preserved, never an overwrite).
+
+    All assertions in one call are staged inside a single
+    :class:`InvestigatorContext` bundle so the publication is atomic.
+
+    No-op when the DB is not reachable (``require_db`` False → returns ``{}``),
+    so the always-green no-DB pipeline tests never touch the network.
+    """
+    if await _db_reachable(state.get("require_db", False)) is not True:
+        return {}
+
+    import json as _json
+
+    from dra.investigators import InvestigatorContext
+    from dra.publish import PublishError, async_session
+    from sqlalchemy import text
+
+    prepared: list[tuple[str, Any, str, str | None]] = []
+    lookup_sql = text(
+        "SELECT id, value FROM user_assertion "
+        "WHERE run_id = :run AND question = :q "
+        "AND assertion_type IN ('USER_CONSTRAINT', 'USER_CORRECTION') "
+        "AND superseded_by IS NULL AND state = 'canonical' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1"
+    )
+    async with async_session() as sess:
+        for question, value in answers:
+            row = await sess.execute(
+                lookup_sql, {"run": run_id, "q": question}
+            )
+            prior = row.fetchone()
+            if prior is not None:
+                prior_id, prior_val = prior[0], prior[1]
+                try:
+                    same = _json.dumps(prior_val, sort_keys=True, default=str) == \
+                        _json.dumps(value, sort_keys=True, default=str)
+                except TypeError:
+                    same = False
+                if not same:
+                    prepared.append((question, value, "USER_CORRECTION", str(prior_id)))
+                else:
+                    prepared.append((question, value, "USER_CONSTRAINT", None))
+            else:
+                prepared.append((question, value, "USER_CONSTRAINT", None))
+
+    try:
+        async with InvestigatorContext(
+            run_id=run_id, task_id=task_id, actor=actor, label="human-assertion"
+        ) as ctx:
+            for question, value, atype, sup in prepared:
+                await ctx.stage_user_assertion(
+                    atype, question, value,
+                    run_id=run_id, task_id=task_id, superseded_by=sup,
+                )
+    except PublishError as exc:
+        return {"audit": {"reason": f"assertion recording failed: {exc}"}}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -395,23 +498,71 @@ async def p0(state: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def p1(state: dict[str, Any]) -> dict[str, Any]:
-    """Phase 1: gate for enough intent to formulate >=1 recon query; interrupt for human."""
+    """Phase 1: gate for enough intent to formulate >=1 recon query; interrupt for human.
+
+    The interrupt payload is parameterised by the §38.5 A/B ``strategy`` (dra#45):
+      - ``progressive`` (default): request a full IntentSnapshot.
+      - ``exhaustive``: request the full §9.1 Stage-A questionnaire up-front.
+      - ``minimal``: request an objective only.
+    On resume, every human-provided answer is recorded as a versioned
+    ``user_assertion`` (USER_CONSTRAINT / USER_CORRECTION) when the DB is
+    reachable; the recording is a no-op on the no-DB path.
+    """
     if not budget_ok(state):
         return {"status": INCOMPLETE}
+    strategy = state.get("strategy") or _DEFAULT_STRATEGY
     if state.get("intent"):
         # Pre-seeded intent (non-interactive `run --objective`): skip interrupt.
-        return {"phase": 1, "status": RUNNING}
+        return {"phase": 1, "status": RUNNING, "strategy": strategy}
+    if strategy == STRATEGY_EXHAUSTIVE:
+        instruction = (
+            "Section 9.1 Stage-A questionnaire — answer every item below so "
+            "Phase 4 is unnecessary. Return an IntentSnapshot with the "
+            "objective and each answer keyed in `user_decisions`."
+        )
+        questions = list(_EXHAUSTIVE_QUESTIONNAIRE)
+    elif strategy == STRATEGY_MINIMAL:
+        instruction = (
+            "Provide only the objective for this research run (a single string)."
+        )
+        questions = []
+    else:
+        instruction = (
+            "Provide an IntentSnapshot: objective + optional "
+            "questions/constraints/parent_run_ids/sources/user_decisions."
+        )
+        questions = []
     payload = interrupt(
         {
             "phase": 1,
-            "instruction": "Provide an IntentSnapshot: objective + optional "
-            "questions/constraints/parent_run_ids/sources/user_decisions.",
+            "strategy": strategy,
+            "instruction": instruction,
+            "questions": questions,
         }
     )
     intent = _intent_to_dict(payload) if payload else {}
     if not intent.get("objective"):
         return {"phase": 1, "status": FAILED, "audit": {"reason": "intent.objective missing"}}
-    return {"phase": 1, "status": RUNNING, "intent": intent}
+
+    # Record human-provided answers as versioned user_assertions (DB-gated no-op
+    # on the no-DB path).  objective / constraint:<i> / user_decisions keys /
+    # question:<i> each become a stably-keyed assertion so p4/p2 corrections can
+    # detect and supersede a prior canonical row.
+    run_id = state.get("run_id", "run")
+    task_id = f"p1:{run_id}"
+    actor = state.get("actor", _ACTOR)
+    answers: list[tuple[str, Any]] = [("objective", intent["objective"])]
+    for i, c in enumerate(intent.get("constraints") or []):
+        answers.append((f"constraint:{i}", c))
+    for k, v in (intent.get("user_decisions") or {}).items():
+        answers.append((k, v))
+    for i, q in enumerate(intent.get("questions") or []):
+        answers.append((f"question:{i}", q))
+    record = await _record_human_assertions(state, answers, run_id, task_id, actor)
+
+    result: dict[str, Any] = {"phase": 1, "status": RUNNING, "intent": intent, "strategy": strategy}
+    result.update(record)
+    return result
 
 
 def _sufficient_intent(intent: dict[str, Any]) -> bool:
@@ -602,18 +753,47 @@ def _clarification_questions(state: dict[str, Any]) -> list[str]:
 
 
 async def p4(state: dict[str, Any]) -> dict[str, Any]:
-    """Phase 4: focused clarification, recording USER_DECISION/USER_CONSTRAINT only."""
+    """Phase 4: focused clarification, recording USER_DECISION/USER_CONSTRAINT only.
+
+    Under ``exhaustive`` and ``minimal`` strategies Phase 4 is skipped (the
+    full questionnaire was asked up-front in p1 / only an objective was
+    requested), so it returns RUNNING without interrupting.  Only ``progressive``
+    runs the conditional clarification interrupt; on resume each answer is
+    recorded as a versioned ``user_assertion`` (DB-gated no-op on the no-DB
+    path).
+    """
     if not budget_ok(state):
         return {"status": INCOMPLETE}
+    strategy = state.get("strategy") or _DEFAULT_STRATEGY
+    if strategy in (STRATEGY_EXHAUSTIVE, STRATEGY_MINIMAL):
+        # Everything was asked in p1 (exhaustive) or only an objective was
+        # requested (minimal) — Phase 4 is a no-op.
+        return {"phase": 4, "status": RUNNING, "strategy": strategy}
     questions = _clarification_questions(state)
     if not questions:
-        return {"phase": 4, "status": RUNNING}
+        return {"phase": 4, "status": RUNNING, "strategy": strategy}
     payload = interrupt({"phase": 4, "questions": questions})
     decisions = {}
     if isinstance(payload, dict):
         decisions.update({f"clarify:{q}": str(ans) for q, ans in payload.items()})
+
+    # Record each clarification answer as a versioned user_assertion (DB-gated
+    # no-op on the no-DB path).  A clarification that revises a prior p1
+    # assertion for the same question flips to USER_CORRECTION (superseded_by)
+    # via the lookup inside _record_human_assertions.
+    run_id = state.get("run_id", "run")
+    task_id = f"p4:{run_id}"
+    actor = state.get("actor", _ACTOR)
+    answers: list[tuple[str, Any]] = []
+    if isinstance(payload, dict):
+        for q, ans in payload.items():
+            answers.append((str(q), str(ans)))
+    record = await _record_human_assertions(state, answers, run_id, task_id, actor)
+
     spend = _spend(state, _PHASE_COST[4])
-    return {"phase": 4, "status": RUNNING, "user_decisions": decisions, **spend}
+    result: dict[str, Any] = {"phase": 4, "status": RUNNING, "user_decisions": decisions, "strategy": strategy, **spend}
+    result.update(record)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -754,17 +934,6 @@ async def run_branch_worker(task: dict[str, Any], actor: dict[str, Any]) -> Bran
         br.status = B_BLOCKED
         br.errors.append(f"investigate: {exc.__class__.__name__}: {exc}")
     return br
-
-
-async def branch_worker(task: dict[str, Any]) -> dict[str, Any]:
-    """Phase 5 graph leaf: dispatch one task through an isolated InvestigatorContext.
-
-    Receives only the ``Send`` argument (the ResearchTask payload, with run_id
-    attached) — never the parent state — so each worker's context is fully
-    isolated (ADR-002/§42).
-    """
-    result = await run_branch_worker(task, task.get("actor", _ACTOR))
-    return {"branch_results": [asdict(result)]}
 
 
 def _task_with_run(task: dict[str, Any], run_id: str) -> dict[str, Any]:
@@ -1257,6 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--objective", required=False, help="Intent objective (seeds Phase 1, skips its interrupt).")
     p_run.add_argument("--repo", metavar="<url|path>", help="Investigate a repository (README comprehension). Seeds a repo source instead of the capture smoke path.")
     p_run.add_argument("--repo-version", metavar="<sha>", help="Pin a commit SHA for --repo (resolved to HEAD if absent).")
+    p_run.add_argument("--strategy", choices=list(_VALID_STRATEGIES), default=_DEFAULT_STRATEGY, help="Interview strategy for the §38.5 A/B (default: progressive).")
     p_run.add_argument("--budget", type=float, default=10.0, help="Budget envelope in --currency.")
     p_run.add_argument("--currency", default="USD")
     p_run.add_argument("--thread-id", default=None, help="Reuse a run/thread id (resume).")
@@ -1301,9 +1471,10 @@ def main(argv: list[str] | None = None) -> int:
         "budget": {"envelope_total": args.budget, "spent": 0.0, "remaining": args.budget, "currency": args.currency},
         "intent": intent,
         "run_id": thread_id,
+        "strategy": args.strategy,
     }
 
-    print(f"[control-plane] §10 research run objective={args.objective!r} budget={args.budget}{args.currency}")
+    print(f"[control-plane] §10 research run strategy={args.strategy} objective={args.objective!r} budget={args.budget}{args.currency}")
     state = asyncio.run(_run_pipeline(initial, thread_id))
     if state.get("__interrupt__"):
         # Paused for human-in-the-loop input (Phase 1/4). Resume programmatically
