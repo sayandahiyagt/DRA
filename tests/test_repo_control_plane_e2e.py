@@ -317,7 +317,64 @@ def test_repo_control_plane_e2e(tmp_path, monkeypatch):
             assert rows[0]["source_kind"] == "repo"
             assert rows[0]["raw_kind"] == "repo_snapshot"
 
-        # (e) published_count >= 4 already asserted via branch_results above
+        # (e) §33 handoff: p13 staged a canonical handoff_statement (dra#42)
+        async with async_session() as s:
+            hs = (
+                await s.execute(
+                    text(
+                        "SELECT hs.decision_id, hs.manifest, hs.content "
+                        "FROM handoff_statement hs "
+                        "JOIN prov_entity pe ON pe.entity_kind='handoff' "
+                        "AND pe.id=hs.id JOIN prov_bundle pb ON pb.id=pe.bundle_id "
+                        "AND pb.run_id=:r AND pe.state='canonical' LIMIT 1"
+                    ),
+                    {"r": thread_id},
+                )
+            ).mappings().first()
+            assert hs is not None, "no canonical handoff_statement staged by p13"
+            manifest = hs["manifest"]
+            assert isinstance(manifest, dict), manifest
+            for fld in ("schema_version", "dependency_graph", "document_map", "retrieval"):
+                assert fld in manifest, f"handoff manifest missing §31.2 field {fld!r}: {manifest}"
+            assert manifest["retrieval"]["contract"] == "§34"
+            assert manifest["retrieval"]["bounded"] is True
+            assert manifest["document_map"]["sections"] == [
+                "00-executive", "01-requirements", "02-architecture",
+                "03-source-system-understanding", "04-implementation-plan",
+                "05-decisions", "06-risks-and-unknowns", "07-evidence-index",
+            ]
+            # §31.1 eight-section human-readable package in content TEXT (D4)
+            content = hs["content"] or ""
+            assert "00-executive" in content
+            assert "07-evidence-index" in content
+
+            # decision_id FK points at a real canonical decision (D1: p13 staged it)
+            dec_count = await s.scalar(
+                text(
+                    "SELECT count(*) FROM decision d "
+                    "JOIN prov_entity pe ON pe.entity_kind='decision' AND pe.id=d.id "
+                    "JOIN prov_bundle pb ON pb.id=pe.bundle_id "
+                    "AND pb.run_id=:r AND pe.state='canonical' WHERE d.id=:did"
+                ),
+                {"r": thread_id, "did": str(hs["decision_id"])},
+            )
+            assert dec_count == 1, "handoff.decision_id is not a real canonical decision"
+
+            # (f) §34 retrieval contract: bounded bundle keyed by decision id
+            from dra.knowledge import retrieve_context_bundle
+
+            bundle = await retrieve_context_bundle(
+                session=s, run_id=thread_id,
+                by={"decision": str(hs["decision_id"])},
+            )
+            assert bundle["architecture_decisions"], "§34 decision bundle: empty decisions"
+            assert bundle["evidence_locators"], "§34 decision bundle: empty evidence"
+            assert bundle["immediate_objective"], "§34 bundle: missing immediate objective"
+            # bounded (§34 L2311)
+            assert len(bundle["architecture_decisions"]) <= 50
+            assert len(bundle["evidence_locators"]) <= 50
+
+            # (g) published_count >= 4 already asserted via branch_results above
 
         # Emit canonical-ID receipt (optionally to disk)
         async with async_session() as s:
