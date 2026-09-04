@@ -46,6 +46,23 @@ if __name__ == "__main__":
     main()
 """
 
+README_MD = """\
+# sample-pkg
+
+A trivial sample package for the DRA repo-investigator fixture.
+
+## Usage
+
+.. code-block:: python
+
+   from sample_pkg import multiply
+   print(multiply(2, 3))
+
+## License
+
+MIT (see ``LICENSE``).
+"""
+
 PYPROJECT_TOML = """\
 [project]
 name = "sample_pkg"
@@ -97,6 +114,7 @@ def build_repo(tmp_path: Path) -> tuple[str, str, str]:
     repo = tmp_path / "sample_repo"
     repo.mkdir(parents=True, exist_ok=True)
     (repo / "sample_pkg.py").write_text(MAIN_PY)
+    (repo / "README.md").write_text(README_MD)
     (repo / "pyproject.toml").write_text(PYPROJECT_TOML)
     (repo / "uv.lock").write_text(UV_LOCK)
     (repo / "LICENSE").write_text(LICENSE_MIT)
