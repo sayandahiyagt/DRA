@@ -24,9 +24,11 @@ import uuid
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END
 from langgraph.types import Command
 
 from dra.control_plane import (
+    B_BLOCKED,
     B_COMPLETE,
     COMPLETE,
     INCOMPLETE,
@@ -34,7 +36,13 @@ from dra.control_plane import (
     STRATEGY_EXHAUSTIVE,
     STRATEGY_MINIMAL,
     STRATEGY_PROGRESSIVE,
+    _PER_BRANCH_COST,
+    _REMAX_ITERATIONS,
+    _build_reresearch_tasks,
+    _route_reresearch,
     build_graph,
+    p11,
+    reresearch_worker,
     run_branch_worker,
 )
 from dra.control_plane import ControlState
@@ -145,13 +153,16 @@ def test_graph_assembles():
     """The compiled StateGraph must assemble without error (no DB needed)."""
     graph = build_graph().compile()
     node_names = set(graph.nodes)
-    # All 15 phase nodes + the two fan-out leaves.
+    # All 15 phase nodes + the three fan-out leaves.
     for i in range(NUM_PHASES):
         assert f"p{i}" in node_names, f"missing phase node p{i}"
     assert "recon_worker" in node_names
     assert "branch_worker" in node_names
+    assert "reresearch_worker" in node_names, "Phase 11 re-research fan-out leaf missing"
     # ControlState carries the budget envelope (Phase 11/14 INCOMPLETE trap).
     assert "budget" in ControlState.__annotations__
+    # Phase 11 round counter (loop-back termination gate, RC #7).
+    assert "reresearch_round" in ControlState.__annotations__
     # Entry/exit wiring present.
     assert "__start__" in node_names
 
@@ -721,6 +732,313 @@ def test_user_correction_supersedes_prior(tmp_path):
         assert second_type == "USER_CORRECTION", second_row
         assert str(second_sup) == str(first_id), second_row  # points at the first
         assert "objective B" in str(second_val), second_row
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 7. No-DB: Phase 11 targeted re-research gate/dispatch logic (always green)
+# ---------------------------------------------------------------------------
+
+
+def test_p11_emits_full_research_tasks():
+    """Phase 11 converts each blocking gap into a full ResearchTask (RC #1).
+
+    Pure in-graph logic (no DB): p11 must emit full ``asdict(ResearchTask)``
+    records carrying ``gap_id`` + affected ``claim_ids`` in ``source.metadata``,
+    a deterministic capture-bytes payload, and a round counter.
+    """
+    from dataclasses import fields
+
+    from dra.control_plane import ResearchTask
+
+    gap = {
+        "gap_id": "gap:0",
+        "description": "No content-addressed evidence was staged (no canonical raw_capture).",
+        "severity": "high",
+        "impact": 2,
+        "blocking": True,
+        "related_claim_ids": ["claim:task-x"],
+    }
+    result = asyncio.run(p11(_base_state(gaps=[gap])))
+    assert result.get("status") != INCOMPLETE, result  # round 0 < _REMAX_ITERATIONS
+    tasks = result["reresearch_tasks"]
+    assert len(tasks) == 1, tasks
+    task = tasks[0]
+    # Full ResearchTask-shaped record (asdict(ResearchTask(...))).
+    expected = {f.name for f in fields(ResearchTask)}
+    assert set(task) == expected, set(task) ^ expected
+    assert task["task_id"] == "reresearch-gap:0-pass-0"
+    assert task["question"] == gap["description"]
+    assert task["retry_rules"] == {"attempts": _REMAX_ITERATIONS}
+    assert task["cost_envelope"] == _PER_BRANCH_COST
+    # gap_id + affected claim_ids preserved for canonical traceability.
+    meta = task["source"]["metadata"]
+    assert meta["gap_id"] == "gap:0"
+    assert meta["affected_claim_ids"] == ["claim:task-x"]
+    # Deterministic capture bytes (the synthetic-evidence fallback).
+    assert task["source"]["bytes"] == b"dra-control-plane:reresearch:gap:0:0"
+    assert task["source"]["locator"] == "reresearch:gap:0"
+    # Round counter advanced for the gate.
+    assert result["reresearch_round"] == 1
+
+
+def test_p11_returns_incomplete_when_blocking_gaps_remain_after_retries():
+    """A blocking gap surviving _REMAX_ITERATIONS rounds -> INCOMPLETE (RC #7).
+
+    Two independent traps: round exhaustion and zero-budget. Both must yield
+    INCOMPLETE so the graph edge routes END without advancing past the gap.
+    """
+    gap = {
+        "gap_id": "gap:1",
+        "description": "still unresolved blocking gap",
+        "severity": "high",
+        "impact": 3,
+        "blocking": True,
+        "related_claim_ids": [],
+    }
+    # Round already exhausted -> INCOMPLETE (no further dispatch).
+    exhausted = asyncio.run(
+        p11(_base_state(gaps=[gap], reresearch_round=_REMAX_ITERATIONS))
+    )
+    assert exhausted["status"] == INCOMPLETE, exhausted
+    assert exhausted["reresearch_round"] == _REMAX_ITERATIONS
+    assert exhausted["reresearch_tasks"] == [], exhausted
+    # Zero budget also traps INCOMPLETE (existing budget guard, p11-level).
+    broke = asyncio.run(
+        p11(
+            _base_state(
+                gaps=[gap],
+                budget={"envelope_total": 0.0, "spent": 0.0, "remaining": 0.0, "currency": "USD"},
+            )
+        )
+    )
+    assert broke["status"] == INCOMPLETE, broke
+
+
+def test_p11_creates_no_tasks_when_no_blocking_gaps():
+    """Non-blocking gaps (or none) -> no re-research tasks, proceeds to p12."""
+    from dra.control_plane import p11
+
+    nonblocking = {
+        "gap_id": "g1", "description": "critic question", "severity": "medium",
+        "impact": 1, "blocking": False, "related_claim_ids": [],
+    }
+    result = asyncio.run(p11(_base_state(gaps=[nonblocking])))
+    assert result.get("status") != INCOMPLETE
+    assert result["reresearch_tasks"] == [], result
+    assert result["reresearch_round"] == 0  # round not advanced when nothing dispatched
+
+
+def test_route_reresearch_fanout_dispatches_workers():
+    """DB path (live_investigators True) with a blocking gap fans out Send tasks."""
+    gap = {
+        "gap_id": "gap:db", "description": "d", "severity": "high",
+        "impact": 2, "blocking": True, "related_claim_ids": [],
+    }
+    tasks = _build_reresearch_tasks(_base_state(), [gap], 0)
+    state = _base_state(gaps=[gap], live_investigators=True, reresearch_tasks=tasks)
+    routed = _route_reresearch(state)
+    assert isinstance(routed, list), routed
+    assert routed, "expected a fan-out Send list for a blocking DB gap"
+    assert routed[0].node == "reresearch_worker"
+    assert all(s.arg.get("task_id", "").startswith("reresearch-") for s in routed)
+
+
+def test_route_reresearch_no_db_skips_fanout():
+    """live_investigators=False -> p12 even with blocking gaps + tasks queued."""
+    gap = {
+        "gap_id": "g", "description": "d", "severity": "high",
+        "impact": 1, "blocking": True, "related_claim_ids": [],
+    }
+    tasks = _build_reresearch_tasks(_base_state(), [gap], 0)
+    state = _base_state(gaps=[gap], live_investigators=False, reresearch_tasks=tasks)
+    assert _route_reresearch(state) == "p12"
+
+
+def test_route_reresearch_incomplete_routes_end():
+    """INCOMPLETE (round/budget exhausted) -> END, never advances to p12."""
+    gap = {
+        "gap_id": "g", "description": "d", "severity": "high",
+        "impact": 1, "blocking": True, "related_claim_ids": [],
+    }
+    state = _base_state(
+        status=INCOMPLETE,
+        gaps=[gap],
+        live_investigators=True,
+        reresearch_round=_REMAX_ITERATIONS,
+        reresearch_tasks=[],
+    )
+    assert _route_reresearch(state) == END
+
+
+# ---------------------------------------------------------------------------
+# 8. DB-gated: re-research worker dispatch + full closed loop (Postgres)
+# ---------------------------------------------------------------------------
+
+
+@DB
+@pytest.mark.usefixtures("_isolated_async_engine")
+def test_reresearch_worker_dispatches_via_run_branch_worker(tmp_path):
+    """reresearch_worker is a thin wrapper over run_branch_worker (RC #2).
+
+    NOTE (plan deviation): PLAN_1.md §5a listed this no-DB, but run_branch_worker
+    opens an InvestigatorContext (DB-backed), so it is DB-gated here — the no-DB
+    path is covered by test_route_reresearch_no_db_skips_fanout + test_graph_assembles.
+    """
+    from dra.investigators import content_hash
+    from dra.publish import async_session
+    from sqlalchemy import text
+
+    task_id = "reresearch-direct-pass-0"
+    raw_bytes = b"dra-control-plane:reresearch:direct:0"
+    task = {
+        "task_id": task_id,
+        "question": "re-research a blocking gap",
+        "run_id": "run-reroute-direct",
+        "actor": {
+            "kind": "model", "name": "test", "version": "1.0",
+            "external_id": "dra-control-plane#1.0",
+        },
+        "source": {
+            "kind": "capture",
+            "locator": "reresearch:gap:direct",
+            "bytes": raw_bytes,
+            "metadata": {"gap_id": "gap:direct", "affected_claim_ids": []},
+        },
+    }
+
+    async def run():
+        from tests._evidence import reset
+
+        await reset()
+        out = await reresearch_worker(task)
+        br = out["branch_results"][0]
+        assert br["status"] == B_COMPLETE, br
+        assert br["evidence_ids"], br
+        # Canonical raw_capture staged for the deterministic bytes (content-addressed).
+        raw_hash = content_hash(raw_bytes)
+        async with async_session() as s:
+            cnt = await s.scalar(
+                text(
+                    "SELECT count(*) FROM raw_capture rc "
+                    "JOIN prov_entity pe ON pe.entity_kind='raw_capture' "
+                    "AND pe.content_hash=rc.content_hash "
+                    "JOIN prov_bundle pb ON pb.id=pe.bundle_id "
+                    "WHERE pb.run_id=:r AND rc.state='canonical' AND rc.content_hash=:h"
+                ),
+                {"r": "run-reroute-direct", "h": raw_hash},
+            )
+        assert cnt == 1, {"canonical raw_capture": cnt}
+
+    asyncio.run(run())
+
+
+@DB
+@pytest.mark.usefixtures("_isolated_async_engine")
+def test_reresearch_loop_closes_end_to_end(tmp_path, monkeypatch):
+    """End-to-end re-research loop (RC #8 resolve path): critic blocking gap ->
+    p11 targets a task -> dispatched to an investigator -> canonical evidence
+    persisted -> claims rebuilt (p7) -> p8 re-verifies -> p10 re-evaluates ->
+    proceed to Phase 12/14 COMPLETE.
+
+    Round 0 uses a repo source whose ref is an invalid local path, so
+    RepositoryInvestigator fails (B_BLOCKED, no evidence) -> p10 emits blocking
+    gap:0/gap:1 -> p11 dispatches capture re-research tasks -> the capture
+    fallback stages canonical raw_capture -> p7 rebuilds claims -> p10 re-runs
+    with evidence+claims -> no blocking gaps -> p11 -> p12 -> COMPLETE.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from langgraph.store.memory import InMemoryStore
+
+    from dra.control_plane import postgres_conninfo
+    from dra.db import DATABASE_URL
+    from dra.publish import async_session
+    from sqlalchemy import text
+    from tests._evidence import reset
+
+    monkeypatch.setenv("DRA_SANDBOX_CAPABILITY", "static_only")
+
+    async def run():
+        await reset()
+        thread_id = f"reresearch-e2e-{uuid.uuid4().hex[:8]}"
+        # Invalid repo ref: _git_ok fails -> RepositoryInvestigator raises
+        # ValueError -> B_BLOCKED (no evidence) -> p10 blocking gap -> re-research.
+        repo_ref = str(tmp_path / "not-a-real-repo")
+        async with AsyncPostgresSaver.from_conn_string(
+            postgres_conninfo(DATABASE_URL)
+        ) as checkpointer:
+            await checkpointer.setup()
+            store = InMemoryStore()
+            graph = build_graph().compile(checkpointer=checkpointer, store=store)
+            cfg = {"configurable": {"thread_id": thread_id}}
+            initial = _base_state(
+                require_db=True,
+                live_investigators=True,
+                run_id=thread_id,
+                intent={
+                    "objective": "README comprehension of the sample fixture repo",
+                    "sources": [{"kind": "repo", "ref": repo_ref, "version": ""}],
+                    "constraints": ["scope:repo-comprehension"],
+                },
+            )
+            state = await graph.ainvoke(initial, config=cfg)
+
+        # Phase 14 reached and the blocking gap resolved -> COMPLETE.
+        assert state["phase"] == NUM_PHASES - 1, state
+        assert state["status"] == COMPLETE, (
+            f"expected COMPLETE, got {state['status']}; "
+            f"audit={state.get('audit')}; reresearch_round={state.get('reresearch_round')}; "
+            f"gaps={state.get('gaps')}"
+        )
+
+        # (AC3) Phase 11 actually dispatched re-research workers -> canonical
+        # branch_results exist with reresearch-* task ids. Two blocking gaps
+        # (gap:0 "no claims" + gap:1 "no evidence") each become one targeted task.
+        reresearch_results = [
+            b for b in (state.get("branch_results") or [])
+            if b.get("task_id", "").startswith("reresearch-")
+        ]
+        assert len(reresearch_results) == 2, (
+            f"expected 2 reresearch branches (one per blocking gap), got {reresearch_results}"
+        )
+        assert all(b["status"] == B_COMPLETE for b in reresearch_results), reresearch_results
+        # The round counter advanced (p11 ran a dispatch round, then gated to p12).
+        assert state.get("reresearch_round") >= 1, state.get("reresearch_round")
+
+        # (AC3/4) New canonical evidence persisted for the re-research tasks
+        # (raw_capture staged through publish_bundle — outside checkpoint state).
+        async with async_session() as s:
+            cnt = await s.scalar(
+                text(
+                    "SELECT count(*) FROM source_identity si "
+                    "JOIN raw_capture rc ON rc.source_id = si.id "
+                    "JOIN prov_entity pe ON pe.entity_kind='raw_capture' "
+                    "AND pe.content_hash=rc.content_hash "
+                    "JOIN prov_bundle pb ON pb.id=pe.bundle_id "
+                    "WHERE pb.run_id=:r AND rc.state='canonical' "
+                    "AND si.locator LIKE 'reresearch:%'"
+                ),
+                {"r": thread_id},
+            )
+        assert cnt >= 1, f"no canonical raw_capture evidence for re-research (run {thread_id})"
+
+        # (AC5) Relevant claims rebuilt from the new evidence.
+        claims = state.get("claims") or []
+        assert claims, "no claims rebuilt after re-research"
+        assert all(c.get("evidence_ids") for c in claims), claims
+
+        # (AC6) Re-verification ran (p8 produced a §38.4 verification report).
+        # The loop topology (reresearch_worker -> p6 -> p7 -> p8 -> ...) guarantees
+        # p8 re-executed after the re-research iteration; the merged report
+        # carries the gate_rules verdict structure from run_verification_proof.
+        vreport = state.get("verification_report") or {}
+        assert vreport, "no verification_report from p8"
+        assert "gate_rules" in vreport or "verdict" in vreport, vreport
+
+        # (AC7) Critic re-evaluated: the final gaps contain NO blocking gap.
+        final_gaps = state.get("gaps") or []
+        assert not any(g.get("blocking") for g in final_gaps), final_gaps
+
     asyncio.run(run())
 
 
