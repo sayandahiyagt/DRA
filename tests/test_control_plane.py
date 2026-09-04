@@ -109,6 +109,7 @@ def _base_state(**overrides) -> dict:
     state = {
         "run_id": "run-test",
         "require_db": False,
+        "live_investigators": False,
         "actor": {"kind": "model", "name": "test", "version": "1.0"},
         "budget": {"envelope_total": 10.0, "spent": 0.0, "remaining": 10.0, "currency": "USD"},
         "config_snapshot": {},
@@ -188,10 +189,11 @@ def test_budget_exhaustion_marks_incomplete():
 def test_phase_advancement_no_db():
     """Pre-seeded intent advances the full 15-phase pipeline without a DB.
 
-    Branch workers degrade to BLOCKED (sqlalchemy/investigator extras absent)
-    and the audit reports INCOMPLETE — proving the DAG and per-phase routers
-    are wired end-to-end. With Postgres provisioned the same run reaches
-    COMPLETE/INCOMPLETE with real canonical evidence.
+    With ``live_investigators=False`` (the no-DB default) Phase 5 skips the
+    DB-backed fan-out, so the run reaches Phase 14 INCOMPLETE without touching
+    Postgres — proving the DAG and per-phase routers are wired end-to-end. The
+    DB-gated smoke test exercises real investigators (``live_investigators=True``)
+    and reaches COMPLETE with canonical evidence.
     """
     graph = build_graph().compile(checkpointer=InMemorySaver())
     state = asyncio.run(
@@ -205,8 +207,8 @@ def test_phase_advancement_no_db():
     )
     assert state["phase"] == NUM_PHASES - 1, state
     assert state["status"] in (COMPLETE, INCOMPLETE), state
-    # Phase 5 dispatched fan-out workers that were isolated per-task.
-    assert state.get("branches"), state
+    # No-DB mode skipped the Phase 5 fan-out (no InvestigatorContext dispatches).
+    assert not state.get("branch_results"), state
 
 
 def test_interrupt_resume_roundtrip_inmemory():
@@ -320,7 +322,7 @@ def test_smoke_round_trip(tmp_path):
             cfg = {"configurable": {"thread_id": thread_id}}
 
             # Phase 1: invoke to the human-in-the-loop interrupt.
-            first = await graph.ainvoke(_base_state(), config=cfg)
+            first = await graph.ainvoke(_base_state(live_investigators=True), config=cfg)
             assert first.get("__interrupt__"), first
 
             # Resume with an intent snapshot; the graph runs the pipeline to end.

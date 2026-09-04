@@ -257,6 +257,7 @@ class ControlState(TypedDict, total=False):
     handoff: Annotated[dict[str, Any], _merge_dict]
     audit: Annotated[dict[str, Any], _merge_dict]
     require_db: bool
+    live_investigators: bool
     actor: Annotated[dict[str, Any], _merge_dict]
 
 
@@ -729,9 +730,17 @@ def _task_with_run(task: dict[str, Any], run_id: str) -> dict[str, Any]:
 
 
 def _route_branches(state: dict[str, Any]) -> list[Send] | str:
-    """Conditional edge p5 -> branch_worker fan-out (or END on budget/exhaustion)."""
+    """Conditional edge p5 -> branch_worker fan-out (or END on budget/exhaustion).
+
+    When ``live_investigators`` is False (the default / no-DB verification path)
+    the fan-out is skipped — Phase 5 becomes a pure dispatch that advances to
+    Phase 6 without opening DB-backed InvestigatorContext bundles. The DB-gated
+    smoke test sets ``live_investigators=True`` to exercise real investigators.
+    """
     if not budget_ok(state) or state.get("status") == INCOMPLETE:
         return END
+    if not state.get("live_investigators"):
+        return "p6"
     tasks = state.get("research_tasks") or {}
     if not tasks:
         return "p6"
@@ -1234,6 +1243,7 @@ def main(argv: list[str] | None = None) -> int:
     thread_id = args.thread_id or uuid.uuid4().hex
     initial: dict[str, Any] = {
         "require_db": True,
+        "live_investigators": True,
         "actor": _ACTOR,
         "budget": {"envelope_total": args.budget, "spent": 0.0, "remaining": args.budget, "currency": args.currency},
         "intent": intent,
