@@ -9,7 +9,7 @@ Mission: `sayandahiyagt/dra#37`  Spec: `§38.1`
 
 | Variant | Effort(LOC) | Checkpoint rows | Parallel workers | in-state findings | Cancel rollback→retry | Context growth (max bytes) | Ops deps | Verify |
 |---|---|---|---|---|---|---|---|---|
-| A_langgraph | 252 | 12 | 3 | 0 | 0->12 | 1650 | 0 | PASS |
+| A_langgraph | 252 | 12 | 3 | 0 | 0->12 | 1658 | 0 | PASS |
 | B_deep_agents | 89 | 7 | 3 | 0 | 0->12 | 1043 | 2 | PASS |
 | C_deerflow | 145 | 17 | 3 | 1 | 0->12 | 1651 | 0 | PASS |
 
@@ -33,6 +33,6 @@ Composite scores (lower is better; effort weighted 2×, ops 1×, context growth 
 All findings committed via dra.publish/publish_bundle (bundle_id receipt per variant). A & B: in_state_findings=0 (LangGraph control state / DeepAgents files channel empty — evidence stays on dra.publish). C: DeerFlow native ThreadState materialises tool results into agent-internal thread_data (ThreadDataMiddleware, sandbox=True) — findings NOT held exclusively on dra.publish -> DISQUALIFIED.
 
 Per-variant commit receipts (bundle UUIDs):
-- `A_langgraph`: commit bundle(s) ['498d71d1-0edd-47db-8338-da3f4eb99f39']
-- `B_deep_agents`: commit bundle(s) ['29cf1879-df68-411b-88cd-f975021f6f49']
-- `C_deerflow`: commit bundle(s) ['f13f5029-7847-4ef7-9626-a548388bf40c']
+- `A_langgraph`: commit bundle(s) ['e3b91b3f-ad7d-4805-aa47-b606a166b659']
+- `B_deep_agents`: commit bundle(s) ['e6b30074-67d2-4ebe-8b5c-4b4401554525']
+- `C_deerflow`: commit bundle(s) ['9812d9c3-30f2-44e9-8cb1-8faad95fed93']

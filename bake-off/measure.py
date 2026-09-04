@@ -233,22 +233,30 @@ def measure_variant(variant: str) -> dict:
         },
         "verify": verify,
     }
-    # Composite cost (lower = better) per PLAN §0: effort (2x) + operational
-    # complexity (1x) + disqualification penalty. Adapter LOC is a secondary
-    # effort term; substrate-ADOPTION burden (setup steps, new un-locked deps,
-    # services, env vars) is the primary differentiator — A adds NOTHING (declared
-    # langgraph stack), B adds deepagents+langchain, C adds a vendored clone +
-    # config + shims + native-state violation. Context growth (dim 7) is reported
-    # separately, NOT in the win/loss composite.
-    effort_score = loc + 150 * setup_steps
-    ops_score = (30 * len(_VARIANT_ADDED_DEPS[variant])
-                 + 100 * (1 if variant == "C_deerflow" else 0)
-                 + 5 * len(_VARIANT_ENV_VARS[variant]))
-    composite = round(effort_score * 2 + ops_score + (999 if in_state else 0))
-    measurements["_composite"] = composite
-    measurements["_elapsed_ms"] = round((time.perf_counter() - t0) * 1000)
+    measurements["composite"] = compute_composite(measurements, variant)
+    measurements["elapsed_ms"] = round((time.perf_counter() - t0) * 1000)
     return {"variant": variant, "run_id": run_id, "bundles": run["bundles"],
             "measurements": measurements}
+
+
+def compute_composite(m: dict, variant: str) -> int:
+    """Recompute the §38.1/§42 cost composite from the 8-dimension measurements.
+
+    Used both for live runs and for the unavailable-variant fallback (so a
+    stripped environment that cannot re-run a variant keeps that variant's real
+    numbers + a real composite, rather than clobbering them). Composite is
+    effort (2x) + operational complexity (1x) + disqualification penalty.
+    """
+    e = m["implementation_effort"]
+    oc = m["operational_complexity"]
+    in_state = m["artifact_evidence_friction"]["in_state_findings"]
+    loc = e["loc_adapter"]
+    setup = e["setup_steps"]
+    deps = len(oc["added_deps"])
+    services = oc["services"]
+    env = len(oc["env_vars"])
+    return round(2 * (loc + 150 * setup) + (30 * deps + 100 * services + 5 * env)
+                 + (999 if in_state else 0))
 
 
 # ---------------------------------------------------------------------------
@@ -278,8 +286,13 @@ def _committed_measurements() -> dict:
 
 def build_ledger() -> dict:
     import evidence
-    evidence.reset_bakeoff_evidence()
-    evidence.reset_checkpoints()
+    # Tolerant reset: in a stripped env (no Postgres) the per-variant run will
+    # fall back to the committed ledger, so the reset must not abort the build.
+    try:
+        evidence.reset_bakeoff_evidence()
+        evidence.reset_checkpoints()
+    except Exception:
+        pass
     committed = _committed_measurements()
     results = []
     for variant in ("A_langgraph", "B_deep_agents", "C_deerflow"):
@@ -290,13 +303,15 @@ def build_ledger() -> dict:
             # stripped env. Preserve the committed measurements (real numbers
             # from a full run) and flag the variant as unavailable here.
             m = committed.get(variant, {})
-            m.setdefault("_composite", 0)
+            m.setdefault("composite", compute_composite(m, variant))
             m.setdefault("artifact_evidence_friction", {})
             m["artifact_evidence_friction"].setdefault("in_state_findings", 0)
             m["artifact_evidence_friction"]["disqualified"] = (
                 m["artifact_evidence_friction"].get("in_state_findings", 0) > 0)
             m["artifact_evidence_friction"]["disqual_reason"] = (
-                m["artifact_evidence_friction"].get("disqual_reason"))
+                m["artifact_evidence_friction"].get("disqual_reason")
+                or ("findings forced into agent-internal state (bypass dra.publish)"
+                    if m["artifact_evidence_friction"].get("in_state_findings", 0) else None))
             m["verify"] = m.get("verify", {"verdict": "PASS", "claims_evaluated": 0})
             results.append({"variant": variant, "run_id": None, "bundles": [],
                             "unavailable": f"{exc.__class__.__name__}: {exc}",
@@ -305,9 +320,9 @@ def build_ledger() -> dict:
     a = next(r for r in results if r["variant"] == "A_langgraph")
     b = next(r for r in results if r["variant"] == "B_deep_agents")
     c = next(r for r in results if r["variant"] == "C_deerflow")
-    a_comp = a["measurements"]["_composite"]
-    b_comp = b["measurements"]["_composite"]
-    c_comp = c["measurements"]["_composite"]
+    a_comp = a["measurements"].get("composite", 0)
+    b_comp = b["measurements"].get("composite", 0)
+    c_comp = c["measurements"].get("composite", 0)
 
     disqualifications = []
     for r in (b, c):
@@ -324,8 +339,8 @@ def build_ledger() -> dict:
     def delta(r):
         m = r["measurements"]
         return {
-            "composite": {"A": a_comp, "this": m["_composite"],
-                          "delta_pct": round((m["_composite"] - a_comp) / a_comp * 100, 1)},
+            "composite": {"A": a_comp, "this": m.get("composite", compute_composite(m, variant)),
+                          "delta_pct": round((m.get("composite", compute_composite(m, variant)) - a_comp) / a_comp * 100, 1)},
             "in_state_findings": m["artifact_evidence_friction"]["in_state_findings"],
             "checkpoint_rows": m["checkpoint_resume"]["checkpoint_rows"],
             "verify": m["verify"],

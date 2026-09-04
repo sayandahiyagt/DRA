@@ -61,24 +61,24 @@
         "cancellation_retry": {
           "rollback_canonical": 0,
           "retry_canonical": 12,
-          "retry_bundle_id": "fc7f3978-0b2f-4f4e-89c8-3131cb9d18fa",
+          "retry_bundle_id": "f2f81ebe-2d05-4ebf-873b-9de08ec26b71",
           "idempotent": true
         },
         "context_growth": {
           "per_step_checkpoint_bytes": [
             325,
-            969,
-            1572,
-            1650,
-            856,
-            906,
             981,
-            1059,
-            1201
+            1580,
+            1658,
+            861,
+            919,
+            995,
+            1064,
+            1210
           ],
-          "max_bytes": 1650,
+          "max_bytes": 1658,
           "first_bytes": 325,
-          "growth_ratio": 5.076923076923077
+          "growth_ratio": 5.101538461538461
         },
         "operational_complexity": {
           "added_deps": [],
@@ -97,10 +97,12 @@
             "freshness": true,
             "contradictions_visible": true
           }
-        }
+        },
+        "composite": 509,
+        "elapsed_ms": 1697
       },
       "commit_bundle_ids": [
-        "498d71d1-0edd-47db-8338-da3f4eb99f39"
+        "e3b91b3f-ad7d-4805-aa47-b606a166b659"
       ]
     },
     "B_deep_agents": {
@@ -133,9 +135,9 @@
             3
           ],
           "counts_by_worker": {
-            "1": 6,
             "2": 1,
-            "3": 1
+            "3": 1,
+            "1": 6
           },
           "bleed": [],
           "isolation_pass": true
@@ -165,7 +167,7 @@
         "cancellation_retry": {
           "rollback_canonical": 0,
           "retry_canonical": 12,
-          "retry_bundle_id": "e927d065-f981-41f4-803a-c03085e48775",
+          "retry_bundle_id": "0b04d589-1acb-444d-b086-c8263b4b448d",
           "idempotent": true
         },
         "context_growth": {
@@ -173,13 +175,13 @@
             325,
             695,
             847,
-            1002,
+            998,
             1043,
             1018,
             1043,
             1018,
             1043,
-            1004
+            996
           ],
           "max_bytes": 1043,
           "first_bytes": 325,
@@ -205,10 +207,12 @@
             "freshness": true,
             "contradictions_visible": true
           }
-        }
+        },
+        "composite": 843,
+        "elapsed_ms": 2192
       },
       "commit_bundle_ids": [
-        "29cf1879-df68-411b-88cd-f975021f6f49"
+        "e6b30074-67d2-4ebe-8b5c-4b4401554525"
       ]
     },
     "C_deerflow": {
@@ -241,9 +245,9 @@
             3
           ],
           "counts_by_worker": {
-            "1": 6,
             "2": 1,
-            "3": 1
+            "3": 1,
+            "1": 6
           },
           "bleed": [],
           "isolation_pass": true
@@ -276,7 +280,7 @@
         "cancellation_retry": {
           "rollback_canonical": 0,
           "retry_canonical": 12,
-          "retry_bundle_id": "c24d7910-70ba-434e-a85e-691e52b73029",
+          "retry_bundle_id": "2ddb623a-5820-4dc6-a6cf-1baf3b336420",
           "idempotent": true
         },
         "context_growth": {
@@ -284,22 +288,22 @@
             325,
             683,
             1007,
-            1220,
+            1224,
             1482,
             1651,
-            784,
-            840,
-            895,
+            775,
+            822,
+            876,
+            885,
+            859,
+            901,
+            871,
+            861,
+            884,
+            866,
             879,
-            862,
-            890,
-            875,
-            872,
-            899,
-            874,
-            883,
-            940,
-            957
+            941,
+            970
           ],
           "max_bytes": 1651,
           "first_bytes": 325,
@@ -324,10 +328,12 @@
             "freshness": true,
             "contradictions_visible": true
           }
-        }
+        },
+        "composite": 2004,
+        "elapsed_ms": 513
       },
       "commit_bundle_ids": [
-        "f13f5029-7847-4ef7-9626-a548388bf40c"
+        "9812d9c3-30f2-44e9-8cb1-8faad95fed93"
       ]
     }
   },
@@ -432,8 +438,8 @@
     "evidence_note": "All findings committed via dra.publish/publish_bundle (bundle_id receipt per variant). A & B: in_state_findings=0 (LangGraph control state / DeepAgents files channel empty \u2014 evidence stays on dra.publish). C: DeerFlow native ThreadState materialises tool results into agent-internal thread_data (ThreadDataMiddleware, sandbox=True) \u2014 findings NOT held exclusively on dra.publish -> DISQUALIFIED."
   },
   "run_ids": {
-    "A_langgraph": "bakeoff-A-1da9fab5",
-    "B_deep_agents": "bakeoff-B-3031420a",
-    "C_deerflow": "bakeoff-C-a55300d0"
+    "A_langgraph": "bakeoff-A-c89d0ead",
+    "B_deep_agents": "bakeoff-B-9865bac8",
+    "C_deerflow": "bakeoff-C-7e96d26a"
   }
 }
