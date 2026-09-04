@@ -1,0 +1,435 @@
+{
+  "schema_version": 1,
+  "mission": "sayandahiyagt/dra#46",
+  "spec_anchor": "\u00a738.5",
+  "config": {
+    "seed": 42,
+    "n_topics": 12,
+    "strategies": [
+      "progressive",
+      "exhaustive",
+      "minimal"
+    ],
+    "annoyance_threshold": 0.5,
+    "wasted_research_ceil": 0.4,
+    "handoff_correctness_floor": 0.9,
+    "turns_savings_min": 1
+  },
+  "corpus": {
+    "topics": 12,
+    "recon_perspectives": [
+      "implementation_mechanisms",
+      "closest_existing_systems",
+      "alternatives",
+      "empirical_evidence",
+      "failure_security_licensing_risk",
+      "source_of_truth"
+    ],
+    "critical_question_count": 3,
+    "total_questionnaire_size": 11
+  },
+  "strategies": {
+    "progressive": {
+      "strategy": "progressive",
+      "user_turns": 1.0,
+      "annoyance_proxy": 0.0,
+      "architecture_changing_facts_discovered_late": 0,
+      "research_wasted_on_discarded_branches": 0.3333,
+      "final_handoff_correctness": 1.0,
+      "topics_evaluated": 12,
+      "total_late_facts": 48
+    },
+    "exhaustive": {
+      "strategy": "exhaustive",
+      "user_turns": 11.0,
+      "annoyance_proxy": 0.7273,
+      "architecture_changing_facts_discovered_late": 0,
+      "research_wasted_on_discarded_branches": 0.3333,
+      "final_handoff_correctness": 1.0,
+      "topics_evaluated": 12,
+      "total_late_facts": 48
+    },
+    "minimal": {
+      "strategy": "minimal",
+      "user_turns": 1.0,
+      "annoyance_proxy": 0.0,
+      "architecture_changing_facts_discovered_late": 48,
+      "research_wasted_on_discarded_branches": 0.3333,
+      "final_handoff_correctness": 0.3333,
+      "topics_evaluated": 12,
+      "total_late_facts": 48
+    }
+  },
+  "per_topic": {
+    "progressive": [
+      {
+        "topic_id": "topic_0",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_1",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_2",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_3",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_4",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_5",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_6",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_7",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_8",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_9",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_10",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_11",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      }
+    ],
+    "exhaustive": [
+      {
+        "topic_id": "topic_0",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_1",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_2",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_3",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_4",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_5",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_6",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_7",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_8",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_9",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_10",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      },
+      {
+        "topic_id": "topic_11",
+        "p1_questions": 11,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 4,
+        "late_facts_missed": 0,
+        "handoff_correctness": 1.0
+      }
+    ],
+    "minimal": [
+      {
+        "topic_id": "topic_0",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_1",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_2",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_3",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_4",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_5",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_6",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_7",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_8",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_9",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_10",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      },
+      {
+        "topic_id": "topic_11",
+        "p1_questions": 1,
+        "p4_questions": 0,
+        "late_facts_discovered": 4,
+        "late_facts_in_handoff": 0,
+        "late_facts_missed": 4,
+        "handoff_correctness": 0.3333
+      }
+    ]
+  },
+  "reversal_triggers": {
+    "progressive_handoff_not_worse_than_exhaustive": {
+      "value": {
+        "progressive": 1.0,
+        "exhaustive": 1.0
+      },
+      "threshold": "progressive >= exhaustive",
+      "pass": true
+    },
+    "progressive_fewer_turns_than_exhaustive": {
+      "value": {
+        "progressive": 1.0,
+        "exhaustive": 11.0
+      },
+      "threshold": "progressive < exhaustive",
+      "pass": true
+    },
+    "progressive_saves_at_least_min_turns": {
+      "value": 10.0,
+      "threshold": ">= 1",
+      "pass": true
+    },
+    "progressive_annoyance_below_threshold": {
+      "value": 0.0,
+      "threshold": "< 0.5",
+      "pass": true
+    },
+    "progressive_wasted_research_below_ceil": {
+      "value": 0.3333,
+      "threshold": "< 0.4",
+      "pass": true
+    },
+    "progressive_handoff_correctness_above_floor": {
+      "value": 1.0,
+      "threshold": ">= 0.9",
+      "pass": true
+    }
+  },
+  "verdict": "PASS",
+  "adr005_reversal_triggered": false
+}
