@@ -32,6 +32,7 @@ from dra.publish import (
     create_activity,
     stage_bundle,
     stage_claim,
+    stage_crawl_manifest_entry,
     stage_derived_artifact,
     stage_evidence_unit,
     stage_gap,
@@ -371,6 +372,37 @@ class InvestigatorContext:
         )
         return entity_id
 
+    async def stage_crawl_manifest_entry(
+        self,
+        *,
+        url: str,
+        origin: str,
+        result: str,
+        step: str | None = None,
+        reason: str | None = None,
+        latency_ms: float | None = None,
+        status: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> UUID:
+        """Record one acquisition attempt in the crawl manifest (dra#26).
+
+        Delegates to :func:`dra.publish.stage_crawl_manifest_entry` on the
+        context's acquisition activity, within the bundle's transaction.
+        """
+        return await stage_crawl_manifest_entry(
+            self._session,
+            self._bundle_id,
+            self._acquisition_activity,
+            url=url,
+            origin=origin,
+            result=result,
+            step=step,
+            reason=reason,
+            latency_ms=latency_ms,
+            status=status,
+            metadata=metadata,
+        )
+
     async def create_activity(
         self,
         activity_type: str,
@@ -437,3 +469,20 @@ class InvestigatorContext:
         :class:`PublishError` on validation failure.
         """
         return await publish_bundle(self._bundle_id, session=self._session)
+
+
+# Late-bound re-export (imported at the bottom to avoid a circular import:
+# dra.investigators.website imports InvestigatorContext from this package).
+from dra.investigators.website import WebsiteInvestigator  # noqa: E402
+
+__all__ = [
+    "content_hash",
+    "LOCATOR_SHAPES",
+    "normalize_locator",
+    "validate_locator",
+    "InvestigatorContext",
+    "WebsiteInvestigator",
+    "stage_crawl_manifest_entry",
+    "create_activity",
+    "stage_gap",
+]
