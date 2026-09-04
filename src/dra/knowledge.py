@@ -403,25 +403,39 @@ async def _by_symbol(
 async def _by_topic_or_requirement(
     session: Any, run_id: str, topic_id: UUID, bounds: dict[str, int]
 ) -> dict[str, Any]:
-    """topic (requirements are topics per the §14/0002 schema — no req table)."""
+    """topic (requirements are topics per the §14/0002 schema — no req table).
+
+    ``topic`` is a supporting table with NO ``prov_entity`` row, no ``run_id``,
+    and no ``state`` column (see ``tests/_verification.py:_stage_topic`` and the
+    ``entity_kind`` enum at ``0002_evidence_schema.py:59`` which omits
+    ``topic``). So we resolve the topic row directly by id and then walk its
+    ``claim``/``decision``/``gap`` ``topic_id`` FKs — each scoped to the run via
+    that row's own ``prov_entity`` -> ``prov_bundle(run_id)`` linkage (the
+    function's prior claim/gap/decision sub-queries are already correct; they
+    were only dead because gated on the impossible ``entity_kind='topic'``
+    provenance match).
+    """
     topic = (
         await session.execute(
             text(
                 "SELECT t.id, t.name, t.description FROM topic t "
-                "JOIN prov_entity pe ON pe.entity_kind='topic' AND pe.id=t.id "
-                "JOIN prov_bundle pb ON pb.id=pe.bundle_id AND pb.run_id=:r "
-                "WHERE pe.state='canonical' AND t.id=:tid LIMIT 1"
+                "WHERE t.id = :tid LIMIT 1"
             ),
-            {"r": run_id, "tid": str(topic_id)},
+            {"tid": str(topic_id)},
         )
     ).mappings().first()
     if not topic:
-        return {"architecture_decisions": [], "high_value_claims": [], "evidence_locators": []}
+        return {
+            "architecture_decisions": [],
+            "high_value_claims": [],
+            "evidence_locators": [],
+            "unresolved_gaps": [],
+        }
 
     claim_rows = (
         await session.execute(
             text(
-                "SELECT cl.id, cl.text FROM claim cl "
+                "SELECT cl.id, cl.text, cl.evidence_unit_id FROM claim cl "
                 "JOIN prov_entity pe ON pe.entity_kind='claim' AND pe.id=cl.id "
                 "JOIN prov_bundle pb ON pb.id=pe.bundle_id AND pb.run_id=:r "
                 "WHERE cl.topic_id = :tid AND pe.state='canonical' "
@@ -459,6 +473,27 @@ async def _by_topic_or_requirement(
         )
     ).mappings().all()
 
+    # Evidence backing the retrieved claims (run-scoped via prov_entity).
+    ev_ids = [str(r["evidence_unit_id"]) for r in claim_rows if r["evidence_unit_id"]]
+    evidence_locators: list[dict[str, Any]] = []
+    if ev_ids:
+        ev_rows = (
+            await session.execute(
+                text(
+                    "SELECT eu.id, eu.locator, eu.excerpt FROM evidence_unit eu "
+                    "JOIN prov_entity pe_e ON pe_e.entity_kind='evidence_unit' "
+                    "AND pe_e.id=eu.id "
+                    "JOIN prov_bundle pb ON pb.id=pe_e.bundle_id AND pb.run_id=:r "
+                    "WHERE eu.id = ANY(:eids) AND pe_e.state='canonical'"
+                ),
+                {"r": run_id, "eids": ev_ids},
+            )
+        ).mappings().all()
+        evidence_locators = [
+            {"evidence_unit": str(r["id"]), "locator": r["locator"], "excerpt": r["excerpt"]}
+            for r in ev_rows
+        ]
+
     return {
         "architecture_decisions": [
             {"id": str(r["id"]), "text": r["text"]} for r in dec_rows
@@ -466,6 +501,7 @@ async def _by_topic_or_requirement(
         "high_value_claims": [
             {"id": str(r["id"]), "text": r["text"]} for r in claim_rows
         ],
+        "evidence_locators": evidence_locators[: bounds["evidence"]],
         "unresolved_gaps": [
             {"id": str(r["id"]), "description": r["description"], "severity": r["severity"]}
             for r in gaps

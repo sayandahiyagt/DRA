@@ -245,5 +245,78 @@ def test_retrieve_context_bundle_by_semantic():
     _check_bundle(bundle)
 
 
+@DB
+@pytest.mark.usefixtures("_isolated_async_engine")
+def test_retrieve_context_bundle_by_topic():
+    """by=topic resolves the topic directly (no prov_entity join) and walks its
+    claim/decision/gap topic_id FKs, run-scoped + bounded. Covers the path the
+    review rejected: topic is NOT in the entity_kind enum."""
+    from tests._evidence import build_topic_bundle, reset
+
+    async def run():
+        await reset()
+        run_id = "run-know-topic"
+        bundle_id, ids = await build_topic_bundle(run_id=run_id)
+        from dra.publish import publish_bundle
+
+        await publish_bundle(str(bundle_id))  # staged -> canonical
+
+        async with async_session() as s:
+            bundle = await retrieve_context_bundle(
+                session=s, run_id=run_id, by={"topic": str(ids["topic"])}
+            )
+        assert bundle["high_value_claims"], "no claims for topic"
+        assert bundle["high_value_claims"][0]["id"] == str(ids["claim"])
+        assert bundle["architecture_decisions"], "no decisions for topic"
+        assert bundle["architecture_decisions"][0]["id"] == str(ids["decision"])
+        assert bundle["unresolved_gaps"], "no gaps for topic"
+        assert bundle["unresolved_gaps"][0]["id"] == str(ids["gap"])
+        assert bundle["evidence_locators"], "no evidence for topic's claims"
+        # bounded
+        assert len(bundle["high_value_claims"]) <= 50
+        assert len(bundle["architecture_decisions"]) <= 50
+        assert len(bundle["evidence_locators"]) <= 50
+        assert len(bundle["implementation_entities"]) <= 20
+        # the topic's claim does NOT bleed into a different run (run-scoping)
+        async with async_session() as s:
+            other = await retrieve_context_bundle(
+                session=s, run_id="run-know-other", by={"topic": str(ids["topic"])}
+            )
+        assert not other["high_value_claims"], "topic leaked across runs"
+        return bundle
+
+    bundle = asyncio.run(run())
+    _check_bundle(bundle)
+
+
+@DB
+@pytest.mark.usefixtures("_isolated_async_engine")
+def test_retrieve_context_bundle_by_requirement_alias():
+    """by=requirement routes through the same topic linkage path (no req table)."""
+    from tests._evidence import build_topic_bundle, reset
+
+    async def run():
+        await reset()
+        run_id = "run-know-req"
+        bundle_id, ids = await build_topic_bundle(run_id=run_id)
+        from dra.publish import publish_bundle
+
+        await publish_bundle(str(bundle_id))  # staged -> canonical
+
+        async with async_session() as s:
+            req_bundle = await retrieve_context_bundle(
+                session=s, run_id=run_id, by={"requirement": str(ids["topic"])}
+            )
+            topic_bundle = await retrieve_context_bundle(
+                session=s, run_id=run_id, by={"topic": str(ids["topic"])}
+            )
+        assert req_bundle["high_value_claims"], "requirement alias returned no claims"
+        assert req_bundle == topic_bundle  # identical linkage results
+        return req_bundle
+
+    bundle = asyncio.run(run())
+    _check_bundle(bundle)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
