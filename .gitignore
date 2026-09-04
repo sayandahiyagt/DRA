@@ -33,3 +33,17 @@ alembic/versions/__pycache__/
 # §38.2 storage proof generated artifacts
 proof_report.json
 proof_report.md
+
+# §38.1 control-plane bake-off prototype (dra#37) — NON-CANONICAL.
+# The hand-written deliverables (workflow, variants, results ledger, tests)
+# ARE committed so they survive a workspace reset and are reviewable at the
+# branch checkout. Only the heavy regenerable DeerFlow clone + runtime
+# artifacts are gitignored. The dra wheel is unaffected: packaging uses
+# `[tool.setuptools.packages.find] where = ["src"]`, so nothing outside src/
+# is packaged (verified by the wheel smoke-check). See bake-off/README.md.
+bake-off/_corpus/
+bake-off/__pycache__/
+bake-off/**/__pycache__/
+bake-off/.pytest_cache/
+# Vendored DeerFlow 2 clone — regenerable, gitignored (heavy).
+bake-off/variant_c_deerflow/deerflow/

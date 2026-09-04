@@ -1,0 +1,445 @@
+{
+  "schema_version": 1,
+  "mission": "sayandahiyagt/dra#37",
+  "spec_anchor": "\u00a738.1",
+  "decision_rule": "LangGraph remains the control-plane substrate unless an alternative MATERIALLY reduces measured cost (>=20% lower composite) AND does not force canonical evidence into agent-internal state (in_state_findings==0). Any variant with in_state_findings>0 is DISQUALIFIED regardless of raw score.",
+  "workflow": "bake-off/workflow_def.py \u2014 recon->fan-out->investigate->commit->verify->synthesize over a tiny deterministic local corpus, routed through dra.publish/publish_bundle",
+  "variants": {
+    "A_langgraph": {
+      "package": "langgraph==1.2.11 + langgraph-checkpoint-postgres==3.1.2 (declared)",
+      "measurements": {
+        "implementation_effort": {
+          "loc_adapter": 252,
+          "adapter_files": [
+            "variant_a_langgraph/graph.py",
+            "variant_a_langgraph/run.py"
+          ],
+          "setup_steps": 0,
+          "setup_commands": []
+        },
+        "checkpoint_resume": {
+          "checkpoint_rows": 12,
+          "canonical_after_run": 17,
+          "canonical_after_resume": 17,
+          "dup_canonical": 0,
+          "resume_idempotent": true
+        },
+        "parallel_isolation": {
+          "workers": 3,
+          "worker_tags": [
+            1,
+            2,
+            3
+          ],
+          "counts_by_worker": {
+            "1": 6,
+            "2": 1,
+            "3": 1
+          },
+          "bleed": [],
+          "isolation_pass": true
+        },
+        "observability": {
+          "checkpoint_blobs": 12,
+          "trace_events_messages": 12,
+          "human_steps_to_reconstruct": 12
+        },
+        "artifact_evidence_friction": {
+          "adapter_loc": 252,
+          "publish_call_sites": 2,
+          "in_state_findings": 0,
+          "native_state": {
+            "kind": "langgraph_control_state",
+            "in_state_findings": 0,
+            "files": 0,
+            "thread_data": 0,
+            "artifacts": 0
+          },
+          "disqualified": false,
+          "disqual_reason": null
+        },
+        "cancellation_retry": {
+          "rollback_canonical": 0,
+          "retry_canonical": 12,
+          "retry_bundle_id": "f2f81ebe-2d05-4ebf-873b-9de08ec26b71",
+          "idempotent": true
+        },
+        "context_growth": {
+          "per_step_checkpoint_bytes": [
+            325,
+            981,
+            1580,
+            1658,
+            861,
+            919,
+            995,
+            1064,
+            1210
+          ],
+          "max_bytes": 1658,
+          "first_bytes": 325,
+          "growth_ratio": 5.101538461538461
+        },
+        "operational_complexity": {
+          "added_deps": [],
+          "services": 0,
+          "env_vars": [
+            "DATABASE_URL"
+          ]
+        },
+        "verify": {
+          "verdict": "PASS",
+          "claims_evaluated": 1,
+          "gate_rules": {
+            "entailment": true,
+            "no_masquerade": true,
+            "ugc_controlled": true,
+            "freshness": true,
+            "contradictions_visible": true
+          }
+        },
+        "composite": 509,
+        "elapsed_ms": 1697
+      },
+      "commit_bundle_ids": [
+        "e3b91b3f-ad7d-4805-aa47-b606a166b659"
+      ]
+    },
+    "B_deep_agents": {
+      "deep_agents_package": "deepagents==0.7.13 (resolved; mission's literal 'deep-agents' is 404 on PyPI)",
+      "measurements": {
+        "implementation_effort": {
+          "loc_adapter": 89,
+          "adapter_files": [
+            "variant_b_deep_agents/worker.py",
+            "variant_b_deep_agents/run.py"
+          ],
+          "setup_steps": 2,
+          "setup_commands": [
+            "uv pip install deepagents==0.7.13",
+            "uv pip install langchain"
+          ]
+        },
+        "checkpoint_resume": {
+          "checkpoint_rows": 7,
+          "canonical_after_run": 17,
+          "canonical_after_resume": 17,
+          "dup_canonical": 0,
+          "resume_idempotent": true
+        },
+        "parallel_isolation": {
+          "workers": 3,
+          "worker_tags": [
+            1,
+            2,
+            3
+          ],
+          "counts_by_worker": {
+            "2": 1,
+            "3": 1,
+            "1": 6
+          },
+          "bleed": [],
+          "isolation_pass": true
+        },
+        "observability": {
+          "checkpoint_blobs": 7,
+          "trace_events_messages": 7,
+          "human_steps_to_reconstruct": 7
+        },
+        "artifact_evidence_friction": {
+          "adapter_loc": 89,
+          "publish_call_sites": 2,
+          "in_state_findings": 0,
+          "native_state": {
+            "kind": "deepagents_filesystem",
+            "files_channel": false,
+            "files_entries": 0,
+            "in_state_findings": 0,
+            "channels": [
+              "__pregel_tasks",
+              "__start__"
+            ]
+          },
+          "disqualified": false,
+          "disqual_reason": null
+        },
+        "cancellation_retry": {
+          "rollback_canonical": 0,
+          "retry_canonical": 12,
+          "retry_bundle_id": "0b04d589-1acb-444d-b086-c8263b4b448d",
+          "idempotent": true
+        },
+        "context_growth": {
+          "per_step_checkpoint_bytes": [
+            325,
+            695,
+            847,
+            998,
+            1043,
+            1018,
+            1043,
+            1018,
+            1043,
+            996
+          ],
+          "max_bytes": 1043,
+          "first_bytes": 325,
+          "growth_ratio": 3.209230769230769
+        },
+        "operational_complexity": {
+          "added_deps": [
+            "deepagents==0.7.13",
+            "langchain"
+          ],
+          "services": 0,
+          "env_vars": [
+            "DATABASE_URL"
+          ]
+        },
+        "verify": {
+          "verdict": "PASS",
+          "claims_evaluated": 1,
+          "gate_rules": {
+            "entailment": true,
+            "no_masquerade": true,
+            "ugc_controlled": true,
+            "freshness": true,
+            "contradictions_visible": true
+          }
+        },
+        "composite": 843,
+        "elapsed_ms": 2192
+      },
+      "commit_bundle_ids": [
+        "e6b30074-67d2-4ebe-8b5c-4b4401554525"
+      ]
+    },
+    "C_deerflow": {
+      "deerflow_rev": "v2.0.0 (vendored clone, gitignored)",
+      "measurements": {
+        "implementation_effort": {
+          "loc_adapter": 145,
+          "adapter_files": [
+            "variant_c_deerflow/adapter.py",
+            "variant_c_deerflow/run.py"
+          ],
+          "setup_steps": 2,
+          "setup_commands": [
+            "git clone --depth 1 --branch v2.0.0 https://github.com/bytedance/deer-flow",
+            "cp config.example.yaml config.yaml (DEER_FLOW_CONFIG_PATH)"
+          ]
+        },
+        "checkpoint_resume": {
+          "checkpoint_rows": 17,
+          "canonical_after_run": 17,
+          "canonical_after_resume": 17,
+          "dup_canonical": 0,
+          "resume_idempotent": true
+        },
+        "parallel_isolation": {
+          "workers": 3,
+          "worker_tags": [
+            1,
+            2,
+            3
+          ],
+          "counts_by_worker": {
+            "2": 1,
+            "3": 1,
+            "1": 6
+          },
+          "bleed": [],
+          "isolation_pass": true
+        },
+        "observability": {
+          "checkpoint_blobs": 17,
+          "trace_events_messages": 17,
+          "human_steps_to_reconstruct": 17
+        },
+        "artifact_evidence_friction": {
+          "adapter_loc": 145,
+          "publish_call_sites": 2,
+          "in_state_findings": 1,
+          "native_state": {
+            "thread_data": 1,
+            "artifacts": 0,
+            "delegations": 0,
+            "skill_context": 0,
+            "channels_present": [
+              "__pregel_tasks",
+              "__start__",
+              "messages",
+              "thread_data"
+            ],
+            "in_state_findings": 1
+          },
+          "disqualified": true,
+          "disqual_reason": "findings forced into agent-internal state (bypass dra.publish)"
+        },
+        "cancellation_retry": {
+          "rollback_canonical": 0,
+          "retry_canonical": 12,
+          "retry_bundle_id": "2ddb623a-5820-4dc6-a6cf-1baf3b336420",
+          "idempotent": true
+        },
+        "context_growth": {
+          "per_step_checkpoint_bytes": [
+            325,
+            683,
+            1007,
+            1224,
+            1482,
+            1651,
+            775,
+            822,
+            876,
+            885,
+            859,
+            901,
+            871,
+            861,
+            884,
+            866,
+            879,
+            941,
+            970
+          ],
+          "max_bytes": 1651,
+          "first_bytes": 325,
+          "growth_ratio": 5.08
+        },
+        "operational_complexity": {
+          "added_deps": [],
+          "services": 1,
+          "env_vars": [
+            "DATABASE_URL",
+            "DEER_FLOW_CONFIG_PATH",
+            "DEER_FLOW_CONFIG_PATH->config.yaml"
+          ]
+        },
+        "verify": {
+          "verdict": "PASS",
+          "claims_evaluated": 1,
+          "gate_rules": {
+            "entailment": true,
+            "no_masquerade": true,
+            "ugc_controlled": true,
+            "freshness": true,
+            "contradictions_visible": true
+          }
+        },
+        "composite": 2004,
+        "elapsed_ms": 513
+      },
+      "commit_bundle_ids": [
+        "9812d9c3-30f2-44e9-8cb1-8faad95fed93"
+      ]
+    }
+  },
+  "disqualifications": [
+    {
+      "variant": "C_deerflow",
+      "reason": "findings forced into agent-internal state (bypass dra.publish)",
+      "native_state": {
+        "thread_data": 1,
+        "artifacts": 0,
+        "delegations": 0,
+        "skill_context": 0,
+        "channels_present": [
+          "__pregel_tasks",
+          "__start__",
+          "messages",
+          "thread_data"
+        ],
+        "in_state_findings": 1
+      },
+      "per_dim_ignored": [
+        "effort",
+        "operational_complexity",
+        "context_growth"
+      ]
+    }
+  ],
+  "recommendation": {
+    "chosen": "A_langgraph",
+    "rule_invoked": "\u00a738.1/\u00a742 \u2014 LangGraph stands unless an alternative wins materially without forcing canonical evidence into agent state",
+    "deltas_vs_A": {
+      "B_deep_agents": {
+        "composite": {
+          "A": 509,
+          "this": 843,
+          "delta_pct": 65.6
+        },
+        "in_state_findings": 0,
+        "checkpoint_rows": 7,
+        "verify": {
+          "verdict": "PASS",
+          "claims_evaluated": 1,
+          "gate_rules": {
+            "entailment": true,
+            "no_masquerade": true,
+            "ugc_controlled": true,
+            "freshness": true,
+            "contradictions_visible": true
+          }
+        }
+      },
+      "C_deerflow": {
+        "composite": {
+          "A": 509,
+          "this": 2004,
+          "delta_pct": 293.7
+        },
+        "in_state_findings": 1,
+        "checkpoint_rows": 17,
+        "verify": {
+          "verdict": "PASS",
+          "claims_evaluated": 1,
+          "gate_rules": {
+            "entailment": true,
+            "no_masquerade": true,
+            "ugc_controlled": true,
+            "freshness": true,
+            "contradictions_visible": true
+          }
+        }
+      }
+    },
+    "composite_scores": {
+      "A_langgraph": 509,
+      "B_deep_agents": 843,
+      "C_deerflow": 2004
+    },
+    "disqualifications": [
+      {
+        "variant": "C_deerflow",
+        "reason": "findings forced into agent-internal state (bypass dra.publish)",
+        "native_state": {
+          "thread_data": 1,
+          "artifacts": 0,
+          "delegations": 0,
+          "skill_context": 0,
+          "channels_present": [
+            "__pregel_tasks",
+            "__start__",
+            "messages",
+            "thread_data"
+          ],
+          "in_state_findings": 1
+        },
+        "per_dim_ignored": [
+          "effort",
+          "operational_complexity",
+          "context_growth"
+        ]
+      }
+    ],
+    "evidence_note": "All findings committed via dra.publish/publish_bundle (bundle_id receipt per variant). A & B: in_state_findings=0 (LangGraph control state / DeepAgents files channel empty \u2014 evidence stays on dra.publish). C: DeerFlow native ThreadState materialises tool results into agent-internal thread_data (ThreadDataMiddleware, sandbox=True) \u2014 findings NOT held exclusively on dra.publish -> DISQUALIFIED."
+  },
+  "run_ids": {
+    "A_langgraph": "bakeoff-A-c89d0ead",
+    "B_deep_agents": "bakeoff-B-9865bac8",
+    "C_deerflow": "bakeoff-C-7e96d26a"
+  }
+}
