@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "mission": "sayandahiyagt/dra#43",
+  "spec_anchor": "\u00a738.6",
+  "generated_at": "2026-09-04T16:03:26.671050+00:00",
+  "run_id": "downstream-utility-20260904T160326",
+  "decision_rule": "Full handoff+queryable-corpus architecture (arm 5) must strictly < (<=0.9x / <=0.95x) BOTH binding baselines (raw_sources, ordinary_report) on ALL four metrics; tie or any baseline win -> simplify (ADR-018 / \u00a740).",
+  "held_constant": {
+    "coding_agent_model": "gpt-5.6-luna@workhorse (synthetic)",
+    "coding_agent_version": "1.0-synthetic",
+    "sandbox_image": "ghcr.io/sayandahiyagt/dra:synthetic-workhorse",
+    "repo_snapshot_ref": "synthetic:repo-comprehension-fixture",
+    "downstream_task": "repo-comprehension:build a module+symbol inventory of a README repo",
+    "objective": "produce a correct module boundary map + symbol signature inventory of a repository"
+  },
+  "arms": [
+    {
+      "id": "raw_sources",
+      "label": "Raw sources (baseline)",
+      "provides_handoff_document": false,
+      "provides_queryable_knowledge": false,
+      "knowledge_access": "none",
+      "is_baseline": true
+    },
+    {
+      "id": "ordinary_report",
+      "label": "Ordinary research report (baseline)",
+      "provides_handoff_document": true,
+      "provides_queryable_knowledge": false,
+      "knowledge_access": "none (prose only)",
+      "is_baseline": true
+    },
+    {
+      "id": "structured_corpus_no_handoff",
+      "label": "Structured evidence corpus, no handoff",
+      "provides_handoff_document": false,
+      "provides_queryable_knowledge": true,
+      "knowledge_access": "queryable",
+      "is_baseline": false
+    },
+    {
+      "id": "handoff_no_queryable_corpus",
+      "label": "Handoff without queryable corpus",
+      "provides_handoff_document": true,
+      "provides_queryable_knowledge": false,
+      "knowledge_access": "inline evidence-index only (\u00a731.1 / 07-evidence-index.md)",
+      "is_baseline": false
+    },
+    {
+      "id": "full_handoff_queryable_corpus",
+      "label": "Full architecture: handoff + queryable corpus",
+      "provides_handoff_document": true,
+      "provides_queryable_knowledge": true,
+      "knowledge_access": "queryable",
+      "is_baseline": false
+    }
+  ],
+  "per_arm": {
+    "raw_sources": {
+      "arm": "raw_sources",
+      "label": "Raw sources (baseline)",
+      "provides_handoff_document": false,
+      "provides_queryable_knowledge": false,
+      "knowledge_access": "none",
+      "metrics": {
+        "re_research_calls": 34,
+        "incorrect_assumptions": 12,
+        "time_to_correct_build": 1440.0,
+        "architectural_rework": 6
+      },
+      "citation_entailability": 0.125,
+      "source_diversity": 0.125,
+      "contradiction_discovery_rate": 0.5,
+      "gap_detection_rate": 0.875,
+      "downstream_success": false,
+      "p50_ms": 1440.0,
+      "build_green": false
+    },
+    "ordinary_report": {
+      "arm": "ordinary_report",
+      "label": "Ordinary research report (baseline)",
+      "provides_handoff_document": true,
+      "provides_queryable_knowledge": false,
+      "knowledge_access": "none (prose only)",
+      "metrics": {
+        "re_research_calls": 10,
+        "incorrect_assumptions": 5,
+        "time_to_correct_build": 650.0,
+        "architectural_rework": 4
+      },
+      "citation_entailability": 0.625,
+      "source_diversity": 0.625,
+      "contradiction_discovery_rate": 0.2083,
+      "gap_detection_rate": 0.375,
+      "downstream_success": false,
+      "p50_ms": 650.0,
+      "build_green": false
+    },
+    "structured_corpus_no_handoff": {
+      "arm": "structured_corpus_no_handoff",
+      "label": "Structured evidence corpus, no handoff",
+      "provides_handoff_document": false,
+      "provides_queryable_knowledge": true,
+      "knowledge_access": "queryable",
+      "metrics": {
+        "re_research_calls": 4,
+        "incorrect_assumptions": 1,
+        "time_to_correct_build": 310.0,
+        "architectural_rework": 2
+      },
+      "citation_entailability": 0.75,
+      "source_diversity": 0.75,
+      "contradiction_discovery_rate": 0.0417,
+      "gap_detection_rate": 0.25,
+      "downstream_success": false,
+      "p50_ms": 310.0,
+      "build_green": false
+    },
+    "handoff_no_queryable_corpus": {
+      "arm": "handoff_no_queryable_corpus",
+      "label": "Handoff without queryable corpus",
+      "provides_handoff_document": true,
+      "provides_queryable_knowledge": false,
+      "knowledge_access": "inline evidence-index only (\u00a731.1 / 07-evidence-index.md)",
+      "metrics": {
+        "re_research_calls": 1,
+        "incorrect_assumptions": 0,
+        "time_to_correct_build": 170.0,
+        "architectural_rework": 1
+      },
+      "citation_entailability": 0.875,
+      "source_diversity": 0.875,
+      "contradiction_discovery_rate": 0.0,
+      "gap_detection_rate": 0.125,
+      "downstream_success": false,
+      "p50_ms": 170.0,
+      "build_green": false
+    },
+    "full_handoff_queryable_corpus": {
+      "arm": "full_handoff_queryable_corpus",
+      "label": "Full architecture: handoff + queryable corpus",
+      "provides_handoff_document": true,
+      "provides_queryable_knowledge": true,
+      "knowledge_access": "queryable",
+      "metrics": {
+        "re_research_calls": 0,
+        "incorrect_assumptions": 0,
+        "time_to_correct_build": 100.0,
+        "architectural_rework": 0
+      },
+      "citation_entailability": 1.0,
+      "source_diversity": 1.0,
+      "contradiction_discovery_rate": 0.0,
+      "gap_detection_rate": 0.0,
+      "downstream_success": true,
+      "p50_ms": 100.0,
+      "build_green": true
+    }
+  },
+  "cross_cutting_keys": [
+    "citation_entailability",
+    "source_diversity",
+    "contradiction_discovery_rate",
+    "gap_detection_rate",
+    "downstream_success",
+    "p50_ms"
+  ],
+  "reversal_triggers": {
+    "re_research_calls__vs__raw_sources": {
+      "value": 0,
+      "arm5": 0,
+      "baseline": "raw_sources",
+      "baseline_value": 34,
+      "threshold": "<= 0.9\u00d7 baseline AND strict `<`",
+      "factor": 0.9,
+      "pass": true
+    },
+    "time_to_correct_build__vs__raw_sources": {
+      "value": 100.0,
+      "arm5": 100.0,
+      "baseline": "raw_sources",
+      "baseline_value": 1440.0,
+      "threshold": "<= 0.9\u00d7 baseline AND strict `<`",
+      "factor": 0.9,
+      "pass": true
+    },
+    "incorrect_assumptions__vs__raw_sources": {
+      "value": 0,
+      "arm5": 0,
+      "baseline": "raw_sources",
+      "baseline_value": 12,
+      "threshold": "<= 0.95\u00d7 baseline AND strict `<`",
+      "factor": 0.95,
+      "pass": true
+    },
+    "architectural_rework__vs__raw_sources": {
+      "value": 0,
+      "arm5": 0,
+      "baseline": "raw_sources",
+      "baseline_value": 6,
+      "threshold": "<= 0.95\u00d7 baseline AND strict `<`",
+      "factor": 0.95,
+      "pass": true
+    },
+    "re_research_calls__vs__ordinary_report": {
+      "value": 0,
+      "arm5": 0,
+      "baseline": "ordinary_report",
+      "baseline_value": 10,
+      "threshold": "<= 0.9\u00d7 baseline AND strict `<`",
+      "factor": 0.9,
+      "pass": true
+    },
+    "time_to_correct_build__vs__ordinary_report": {
+      "value": 100.0,
+      "arm5": 100.0,
+      "baseline": "ordinary_report",
+      "baseline_value": 650.0,
+      "threshold": "<= 0.9\u00d7 baseline AND strict `<`",
+      "factor": 0.9,
+      "pass": true
+    },
+    "incorrect_assumptions__vs__ordinary_report": {
+      "value": 0,
+      "arm5": 0,
+      "baseline": "ordinary_report",
+      "baseline_value": 5,
+      "threshold": "<= 0.95\u00d7 baseline AND strict `<`",
+      "factor": 0.95,
+      "pass": true
+    },
+    "architectural_rework__vs__ordinary_report": {
+      "value": 0,
+      "arm5": 0,
+      "baseline": "ordinary_report",
+      "baseline_value": 4,
+      "threshold": "<= 0.95\u00d7 baseline AND strict `<`",
+      "factor": 0.95,
+      "pass": true
+    }
+  },
+  "verdict": "PASS",
+  "simplification_triggered": false,
+  "adr018_reversal_triggered": false,
+  "diagnostic": {
+    "binding_baselines": [
+      "raw_sources",
+      "ordinary_report"
+    ],
+    "ranking": [
+      "full_handoff_queryable_corpus",
+      "handoff_no_queryable_corpus",
+      "structured_corpus_no_handoff",
+      "ordinary_report",
+      "raw_sources"
+    ],
+    "intermediate_arms": [
+      "structured_corpus_no_handoff",
+      "handoff_no_queryable_corpus"
+    ]
+  },
+  "corpus": {
+    "n_tasks": 3,
+    "facts_per_task": [
+      8,
+      8,
+      8
+    ],
+    "total_facts": 24,
+    "repo_extension_tasks": 2,
+    "seed": 42
+  },
+  "staged": false
+}

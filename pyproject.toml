@@ -55,6 +55,7 @@ dra-model-routing-proof = "dra.routing.proof:main"
 dra-verification-gate = "dra.verification_gate:main"
 dra-control-plane = "dra.control_plane:main"
 dra-progressive-interview = "dra.progressive_interview:main"
+dra-downstream-utility-proof = "dra.proof_downstream_utility:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

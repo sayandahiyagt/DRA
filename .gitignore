@@ -42,6 +42,16 @@ proof_report.md
 progressive_interview_report.json
 progressive_interview_report.md
 
+# §38.6 downstream-utility proof generated artifacts (mirrors §38.5).
+# The always-green CLI (`dra-downstream-utility-proof`) emits a per-run
+# `results.json` / `results.md` at the repo root when `--report-path` is left
+# at its default. The diff-stable deterministic ledger is committed under
+# downstream_utility/ instead (same committed-not-ignored pattern as
+# progressive_interview/ and bake-off/). Only the root-level runtime copy is
+# gitignored; /results.json matches the repo root only, not the folder ledger.
+/results.json
+/results.md
+
 # §38.1 control-plane bake-off prototype (dra#37) — NON-CANONICAL.
 # The hand-written deliverables (workflow, variants, results ledger, tests)
 # ARE committed so they survive a workspace reset and are reviewable at the
