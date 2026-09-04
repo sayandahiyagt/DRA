@@ -53,6 +53,7 @@ dra-db-check = "dra.db:main"
 dra-storage-proof = "dra.proof_corpus:main"
 dra-model-routing-proof = "dra.routing.proof:main"
 dra-verification-gate = "dra.verification_gate:main"
+dra-control-plane = "dra.control_plane:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
