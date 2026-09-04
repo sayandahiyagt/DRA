@@ -183,6 +183,9 @@ def test_budget_exhaustion_marks_incomplete():
     assert state["status"] != COMPLETE
     # Must terminate before any interrupt/DB phase.
     assert state["phase"] <= 1
+    # Phase 13 (handoff) is gated behind budget_ok; zero budget never reaches it
+    # (guards the new §33 generation gate).
+    assert not state.get("handoff"), state
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +216,19 @@ def test_phase_advancement_no_db():
     assert state["status"] in (COMPLETE, INCOMPLETE), state
     # No-DB mode skipped the Phase 5 fan-out (no InvestigatorContext dispatches).
     assert not state.get("branch_results"), state
+    # Phase 13 replaced the stub: a §33 manifest + 8-section package must be
+    # present in control state even on the no-DB path (degraded, DB staging
+    # skipped via the live_investigators gate).
+    handoff = state["handoff"]
+    assert handoff["phase"] == 13, handoff
+    assert handoff["section_count"] == 8, handoff
+    assert handoff["schema_version"] == "1.0", handoff
+    assert handoff["retrieval_contract"] == "§34", handoff
+    assert not handoff["db_staged"], handoff
+    assert handoff["manifest"]["schema_version"] == "1.0", handoff["manifest"]
+    from dra.handoff import SECTION_FILES
+
+    assert handoff["manifest"]["document_map"]["sections"] == SECTION_FILES, handoff
 
 
 def test_interrupt_resume_roundtrip_inmemory():

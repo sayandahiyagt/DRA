@@ -1230,23 +1230,57 @@ async def p12(state: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def p13(state: dict[str, Any]) -> dict[str, Any]:
-    """Phase 13: handoff generation from canonical state."""
+    """Phase 13: §33 handoff generation from control state + canonical state.
+
+    Builds the §31.2 machine-readable manifest and the §31.1 eight-section
+    human-readable package (pure helpers, DB-free) and, when the DB is live,
+    stages the handoff through :func:`dra.publish.stage_handoff` +
+    :func:`dra.publish.publish_bundle` (provenance-anchored, ADR-013).
+
+    Degrades gracefully on the no-DB path (mirrors p12's control-state-only
+    behavior): the canonical staging step is gated on ``live_investigators`` and
+    any :class:`~dra.publish.PublishError`/DB failure is caught so
+    ``test_phase_advancement_no_db`` stays green and the DAG still advances to
+    Phase 14. Decisions are staged here (D1) because p12 is kept pure per the
+    mission's "replace the Phase-13 stub" scope.
+    """
     if not budget_ok(state):
         return {"status": INCOMPLETE}
+    run_id = state.get("run_id", "run")
+    actor = state.get("actor", _ACTOR)
+
+    # Lazy import so build_graph().compile() / test_graph_assembles stay DB-free
+    # (same idiom as branch_worker). The pure helpers run even without a DB.
+    from dra.handoff import SECTION_FILES, build_document_package, build_manifest
+
+    manifest = build_manifest(state, run_id, retrieval_endpoint="/knowledge")
+    package = build_document_package(state, manifest)
     handoff = {
-        "human_readable": {
-            "objective": (state.get("intent") or {}).get("objective"),
-            "status": state.get("status"),
-            "decisions": [d.get("question") for d in state.get("decisions") or []],
-            "gaps": [g.get("description") for g in state.get("gaps") or []],
-        },
-        "ml_readable": {
-            "claims": state.get("claims") or [],
-            "decisions": state.get("decisions") or [],
-            "verification": state.get("verification_report") or {},
-            "synthesis": state.get("synthesis") or {},
-        },
+        "phase": 13,
+        "manifest": manifest,  # §31.2 machine-readable manifest
+        "content": package,  # §31.1 eight-section human-readable package
+        "schema_version": "1.0",
+        "section_count": len(SECTION_FILES),
+        "retrieval_contract": "§34",
+        "handoff_id": None,
+        "db_staged": False,
     }
+
+    # Best-effort canonical staging. Gated on live_investigators (the no-DB
+    # path sets it False) so we never attempt a Postgres connection when none is
+    # expected; any failure degrades to the control-state manifest above.
+    if state.get("live_investigators"):
+        try:
+            from dra.handoff import stage_section_handoff
+
+            handoff_id = await stage_section_handoff(state, run_id, actor)
+            handoff["handoff_id"] = str(handoff_id)
+            handoff["db_staged"] = True
+        except Exception:  # noqa: BLE001 — degrade to control-state manifest (mirrors p8/p12)
+            # No DB / PublishError / investigator failure: keep the
+            # control-state manifest so the no-DB verification path stays green.
+            handoff["handoff_id"] = None
+            handoff["db_staged"] = False
     spend = _spend(state, _PHASE_COST[13])
     return {"phase": 13, "handoff": handoff, **spend}
 
