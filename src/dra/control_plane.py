@@ -258,11 +258,22 @@ class ControlState(TypedDict, total=False):
     user_decisions: Annotated[dict[str, str], _merge_dict]
     branches: Annotated[dict[str, Any], _merge_dict]
     branch_results: Annotated[list[dict[str, Any]], operator.add]
-    reresearch_tasks: Annotated[list[dict[str, Any]], operator.add]
-    claims: Annotated[list[dict[str, Any]], operator.add]
+    # Phase 11 re-search round counter (gated by _REMAX_ITERATIONS). Replace
+    # (not accumulate): p11 is the sole writer and re-sets it each pass.
+    reresearch_round: int
+    # Phase 11 dispatch channel: holds ONLY the current round's re-research tasks
+    # (Replace, not accumulate) so the _route_reresearch fan-out edge never
+    # re-dispatches a prior round's tasks. p11 re-emits a fresh, bounded task
+    # list each round; the loop-back edge consumes exactly that list.
+    reresearch_tasks: list[dict[str, Any]]
+    # Phase 7/10 recompute their payloads from canonical branch_results/gaps each
+    # round, so they must Replace (not accumulate) to keep the p11 loop-back
+    # seeing only the CURRENT claims/gaps — preventing stale blocking gaps and
+    # duplicate claims from accumulating across re-research iterations.
+    claims: list[dict[str, Any]]
     verification_report: Annotated[dict[str, Any], _merge_dict]
     synthesis: Annotated[dict[str, Any], _merge_dict]
-    gaps: Annotated[list[dict[str, Any]], operator.add]
+    gaps: list[dict[str, Any]]
     decisions: Annotated[list[dict[str, Any]], operator.add]
     handoff: Annotated[dict[str, Any], _merge_dict]
     audit: Annotated[dict[str, Any], _merge_dict]
@@ -992,17 +1003,24 @@ async def p5(state: dict[str, Any]) -> dict[str, Any]:
 async def p6(state: dict[str, Any]) -> dict[str, Any]:
     """Phase 6: consolidate branch_results -> branches (COMMIT_FAILED stays retryable).
 
-    Charges the per-branch cost to the budget envelope (Phase 11/14 exhaustion
-    trap): a run whose branches exhaust the envelope terminates INCOMPLETE.
+    Charges the per-branch cost only for branches not already consolidated in a
+    prior p6 pass (``state["branches"]``), so the Phase 11 re-research loop-back
+    (``reresearch_worker -> p6``) does not re-charge round-0 branches into the
+    budget envelope. The first pass (empty ``branches``) charges every branch,
+    preserving the existing behaviour for the non-looping smoke/e2e paths.
     """
     if not budget_ok(state):
         return {"status": INCOMPLETE}
     results = state.get("branch_results") or []
+    existing = state.get("branches") or {}
     branches: dict[str, Any] = {}
+    new_count = 0
     for res in results:
         bid = res.get("task_id", res.get("bundle_id") or uuid.uuid4().hex)
+        if bid not in existing:
+            new_count += 1
         branches[bid] = res
-    cost = _PHASE_COST[6] + _PER_BRANCH_COST * len(results)
+    cost = _PHASE_COST[6] + _PER_BRANCH_COST * new_count
     spend = _spend(state, cost)
     return {"phase": 6, "branches": branches, **spend}
 
@@ -1164,34 +1182,236 @@ async def p10(state: dict[str, Any]) -> dict[str, Any]:
 _REMAX_ITERATIONS = 3
 
 
+def _claim_id_to_task_id(claim_id: str) -> str:
+    """Recover a ResearchTask task_id from a ``claim:{task_id}`` ClaimRef id."""
+    prefix = "claim:"
+    return claim_id[len(prefix):] if claim_id.startswith(prefix) else claim_id
+
+
+def _first_repo_ref(state: dict[str, Any]) -> str | None:
+    """First repo source ref from the intent snapshot (for repo-gap re-research)."""
+    intent = state.get("intent") or {}
+    for s in intent.get("sources") or []:
+        if isinstance(s, dict) and s.get("kind") == "repo" and s.get("ref"):
+            return s["ref"]
+    return None
+
+
+def _reresearch_salt(gap: dict[str, Any], round_num: int) -> bytes:
+    """Deterministic bytes payload for the capture fallback (researched from the
+    gap id + round, so re-runs are content-addressed and dedupe on raw_capture)."""
+    return f"dra-control-plane:reresearch:{gap.get('gap_id')}:{round_num}".encode()
+
+
+def _infer_reresearch_source(
+    state: dict[str, Any], gap: dict[str, Any], round_num: int
+) -> dict[str, Any]:
+    """Infer the re-research source kind/locator for a critic gap (plan §3c).
+
+    Reuses the *existing* ``source["kind"]`` dispatch in ``run_branch_worker``
+    (``repo`` -> RepositoryInvestigator, ``paper`` -> PaperInvestigator,
+    ``website`` -> WebsiteInvestigator, ``capture`` fallback) — no new routing
+    table is introduced, only the task-shaping that chooses ``source.kind``.
+
+    Rule 1: a gap whose ``related_claim_ids`` trace back to a **repo** branch
+    (via the originating ResearchTask in ``research_tasks``) and a repo ref is
+    available from the intent -> a repo re-research task.
+    Rule 2: a gap whose text references literature -> the ``website``/search
+    investigator (the paper investigator needs ``pdf_bytes`` unavailable from a
+    gap — RC #3 "Web/source discovery -> website/search").
+    Rule 3 (default): the ``capture`` fallback with a deterministic bytes
+    payload.
+
+    NOTE (plan deviation, documented in discoveries): plan §3c rule 3 specified
+    ``website`` as the default, but the WebsiteInvestigator iterates
+    ``target_urls`` (which critic gaps do not carry) and emits no evidence
+    offline without them. The capture fallback is the only source kind that
+    reliably stages canonical evidence for a generic gap, and it is exactly the
+    "deterministic bytes payload for the capture fallback" that plan Step 1
+    already reserves — so the default is capture, not website.
+    """
+    related = gap.get("related_claim_ids") or []
+    research_tasks = state.get("research_tasks") or {}
+    repo_ref = _first_repo_ref(state)
+    for cid in related:
+        task = research_tasks.get(_claim_id_to_task_id(cid))
+        if not task:
+            continue
+        kind = (task.get("source") or {}).get("kind")
+        if kind == "repo" and repo_ref:
+            return {
+                "kind": "repo",
+                "ref": repo_ref,
+                "locator": repo_ref,
+                "version": "",
+                "metadata": {"gap_id": gap.get("gap_id"), "affected_claim_ids": list(related)},
+            }
+        if kind == "paper":
+            return {
+                "kind": "website",
+                "query": (gap.get("description") or "")[:200],
+                "locator": f"reresearch:{gap.get('gap_id')}",
+                "bytes": _reresearch_salt(gap, round_num),
+                "metadata": {"gap_id": gap.get("gap_id"), "affected_claim_ids": list(related)},
+            }
+    desc = (gap.get("description") or "").lower()
+    if any(tok in desc for tok in ("paper", "literature", "study", "report")):
+        return {
+            "kind": "website",
+            "query": (gap.get("description") or "")[:200],
+            "locator": f"reresearch:{gap.get('gap_id')}",
+            "bytes": _reresearch_salt(gap, round_num),
+            "metadata": {"gap_id": gap.get("gap_id"), "affected_claim_ids": list(related)},
+        }
+    return {
+        "kind": "capture",
+        "locator": f"reresearch:{gap.get('gap_id')}",
+        "bytes": _reresearch_salt(gap, round_num),
+        "metadata": {"gap_id": gap.get("gap_id"), "affected_claim_ids": list(related)},
+    }
+
+
+def _build_reresearch_tasks(
+    state: dict[str, Any], blocking: list[dict[str, Any]], round_num: int
+) -> list[dict[str, Any]]:
+    """Convert each eligible blocking gap into a full ResearchTask record (plan Step 1).
+
+    Each record preserves ``gap_id`` + affected ``claim_ids`` in
+    ``source.metadata`` (so the audit/trace round-trips out of checkpoint
+    control state into canonical bundle provenance), and carries acceptance
+    criteria, retry limits, and a per-branch cost envelope from the phase budget.
+    """
+    tasks: list[dict[str, Any]] = []
+    for gap in blocking:
+        source = _infer_reresearch_source(state, gap, round_num)
+        tasks.append(
+            asdict(
+                ResearchTask(
+                    task_id=f"reresearch-{gap.get('gap_id')}-pass-{round_num}",
+                    question=gap.get("description", ""),
+                    parent_question=None,
+                    why_it_matters=(
+                        f"Targeted re-research of critic gap {gap.get('gap_id')} "
+                        f"(severity={gap.get('severity')}, impact={gap.get('impact')})."
+                    ),
+                    artifact_type="evidence_unit",
+                    source_types=["repo", "paper", "website", "capture"],
+                    dependencies=[],
+                    priority=max(1, gap.get("impact", 1)),
+                    breadth=1,
+                    depth=1,
+                    model_policy={"role": "fact_extraction", "pool": "workhorse"},
+                    acceptance_criteria=[
+                        "content-addressed evidence staged for gap",
+                        "affected claims re-derivable from new evidence",
+                    ],
+                    verification_policy={"rules": ["38.4"]},
+                    stopping_conditions=["evidence staged", "budget_ok"],
+                    retry_rules={"attempts": _REMAX_ITERATIONS},
+                    cost_envelope=_PER_BRANCH_COST,
+                    source=source,
+                )
+            )
+        )
+    return tasks
+
+
 async def p11(state: dict[str, Any]) -> dict[str, Any]:
-    """Phase 11: reopen only high-impact gap/contradiction branches (bounded loop)."""
+    """Phase 11: re-dispatch blocking critic gaps through the shared investigator path.
+
+    The critic (``p10``) emits ``ResearchGap`` records; this phase converts each
+    *blocking* gap into a full :class:`ResearchTask` (preserving ``gap_id`` +
+    affected ``claim_ids`` in ``source.metadata``) and hands the fan-out to the
+    graph edge ``_route_reresearch`` -> ``reresearch_worker`` ->
+    ``run_branch_worker`` (RC #2: no separate re-research engine). The loop closes
+    back through the real phases: ``p6`` consolidation -> ``p7`` claim rebuild ->
+    ``p8`` re-verification -> ``p9`` synthesis -> ``p10`` critic re-evaluation ->
+    ``p11`` gate, so the ``critic -> targeted re-research -> new evidence ->
+    re-verification`` loop closes end-to-end.
+
+    Termination (RC #7): a blocking gap that survives ``_REMAX_ITERATIONS`` rounds
+    (budget exhaustion is already trapped by ``budget_ok`` above) yields
+    ``INCOMPLETE`` so ``_route_reresearch`` routes END without advancing past an
+    unresolved blocking gap. Only non-blocking uncertainty is left recorded in
+    ``gaps`` and carried forward to Phase 12.
+    """
     if not budget_ok(state):
         return {"status": INCOMPLETE}
     gaps = state.get("gaps") or []
     blocking = [g for g in gaps if g.get("blocking")]
-    reopened: list[dict[str, Any]] = []
-    # Only high-impact blocking gaps trigger re-research; bounded iterations and
-    # budget gating guarantee termination. Remaining gaps are documented.
-    budget = _budget(state)
-    for it in range(_REMAX_ITERATIONS):
-        if not budget_ok({"budget": budget}) or not blocking:
-            break
-        for gap in blocking:
-            task = {
-                "task_id": f"reresearch-{gap.get('gap_id')}-pass-{it}",
-                "question": gap.get("description"),
-                "source": {
-                    "kind": "capture",
-                    "locator": f"reresearch:{gap.get('gap_id')}",
-                    "bytes": f"dra-control-plane:reresearch:{gap.get('gap_id')}:{it}".encode(),
-                },
-            }
-            reopened.append(task)
-            blocking = [g for g in blocking if g.get("gap_id") != gap.get("gap_id")]
-            break  # one gap per iteration to bound work
-    spend = _spend(state, _PHASE_COST[11] * max(1, len(reopened)))
-    return {"phase": 11, "reresearch_tasks": reopened, **spend}
+    round_num = state.get("reresearch_round", 0)
+    # No blocking gap -> resolved, or only non-blocking uncertainty -> proceed to p12.
+    if not blocking:
+        return {
+            "phase": 11,
+            "reresearch_tasks": [],
+            "reresearch_round": round_num,
+        }
+    # Blocking gap remains after retry exhaustion -> INCOMPLETE (no Phase 12/13/14).
+    if round_num >= _REMAX_ITERATIONS:
+        return {
+            "phase": 11,
+            "status": INCOMPLETE,
+            "reresearch_round": round_num,
+            "reresearch_tasks": [],
+            "closing_gaps": [g.get("gap_id") for g in blocking],
+        }
+    tasks = _build_reresearch_tasks(state, blocking, round_num)
+    spend = _spend(state, _PHASE_COST[11] * max(1, len(tasks)))
+    return {
+        "phase": 11,
+        "reresearch_tasks": tasks,
+        "reresearch_round": round_num + 1,
+        **spend,
+    }
+
+
+async def reresearch_worker(task: dict[str, Any]) -> dict[str, Any]:
+    """Phase 11 graph leaf: dispatch one re-research task through the SHARED path.
+
+    A thin wrapper over :func:`run_branch_worker` — the same investigator dispatch
+    and isolated ``InvestigatorContext`` / ``publish_bundle`` publication used by
+    Phase 5 (RC #2: no separate re-research engine). Each re-research task is a
+    full ``ResearchTask`` (RC #1) so the existing ``source["kind"]`` routing
+    (repo/paper/website/capture) selects the investigator unchanged.
+    """
+    result = await run_branch_worker(task, task.get("actor", _ACTOR))
+    return {"branch_results": [asdict(result)]}
+
+
+def _route_reresearch(state: dict[str, Any]) -> list[Send] | str:
+    """Conditional edge p11 -> reresearch_worker fan-out (or p12 / END).
+
+    Mirrors the Phase 5 ``_route_branches`` idiom: when ``live_investigators``
+    is False (the default / no-DB verification path) the fan-out is skipped and
+    the run proceeds to Phase 12, keeping the always-green no-DB tests green.
+    Routing (RC #7 termination gate):
+      * INCOMPLETE/FAILED or budget exhausted -> END (p11 already returned
+        INCOMPLETE on round/budget exhaustion; an unresolved blocking gap never
+        advances to Phase 12).
+      * No blocking gap -> p12 (resolved, or only non-blocking uncertainty).
+      * Blocking gap remains, budget + rounds available, live investigators ->
+        Send one ``reresearch_worker`` per re-research task (each opens its own
+        isolated InvestigatorContext bundle — canonical evidence lives in the DB,
+        checkpoint retains IDs/status only, RC #4).
+    """
+    if state.get("status") == INCOMPLETE or state.get("status") == FAILED:
+        return END
+    if not budget_ok(state):
+        return END
+    gaps = state.get("gaps") or []
+    blocking = [g for g in gaps if g.get("blocking")]
+    if not blocking:
+        return "p12"
+    if state.get("reresearch_round", 0) >= _REMAX_ITERATIONS:
+        return END
+    if not state.get("live_investigators"):
+        return "p12"
+    tasks = state.get("reresearch_tasks") or []
+    if not tasks:
+        return "p12"
+    run_id = state.get("run_id", "run")
+    return [Send("reresearch_worker", _task_with_run(t, run_id)) for t in tasks]
 
 
 # ---------------------------------------------------------------------------
@@ -1359,6 +1579,7 @@ def build_graph(require_db: bool = False) -> StateGraph:
         sg.add_node(f"p{i}", _PHASE_NODES[i])
     sg.add_node("recon_worker", recon_worker)
     sg.add_node("branch_worker", branch_worker)
+    sg.add_node("reresearch_worker", reresearch_worker)
 
     sg.add_edge("__start__", "p0")
     # p0 -> p1 (Phase 0 may set FAILED on missing DB when require_db)
@@ -1377,7 +1598,17 @@ def build_graph(require_db: bool = False) -> StateGraph:
     sg.add_conditional_edges("p8", _route("p9"))
     sg.add_conditional_edges("p9", _route("p10"))
     sg.add_conditional_edges("p10", _route("p11"))
-    sg.add_conditional_edges("p11", _route("p12"))
+    # Phase 11 — targeted re-research gate/dispatch. On the no-DB path
+    # (live_investigators False) this short-circuits to p12 exactly like
+    # _route_branches; on the DB path it fans out reresearch_worker tasks, which
+    # loop back through p6->p7->p8->p9->p10->p11 (critic -> re-research ->
+    # evidence -> re-verification) until the blocking gaps resolve or
+    # _REMAX_ITERATIONS / budget exhaustion yields INCOMPLETE (RC #7).
+    sg.add_conditional_edges("p11", _route_reresearch)
+    # Loop-back: a dispatched re-research task publishes canonical evidence
+    # (run_branch_worker -> InvestigatorContext -> publish_bundle) into its own
+    # bundle, then re-enters the real phases for claim rebuild + re-verification.
+    sg.add_edge("reresearch_worker", "p6")
     sg.add_conditional_edges("p12", _route("p13"))
     sg.add_conditional_edges("p13", _route("p14"))
     sg.add_edge("p14", END)
