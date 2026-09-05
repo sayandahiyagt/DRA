@@ -260,13 +260,14 @@ class RepositoryInvestigator:
         )
 
         snapshot_bytes, snapshot_hash = _make_snapshot(toplevel)
-        await self.ctx.stage_raw_capture(
-            snapshot_hash,
+        await self.ctx.stage_source_capture(
             source_id,
+            snapshot_hash,
             kind="repo_snapshot",
             mime_type="application/x-tar+gzip",
             size_bytes=len(snapshot_bytes),
-            stored_at=toplevel,
+            data=snapshot_bytes,
+            final_url=toplevel,
             metadata={
                 "submodules": submodules,
                 "lockfiles": lockfiles,

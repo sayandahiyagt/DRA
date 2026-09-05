@@ -36,7 +36,7 @@ from dra.publish import (
     stage_decision,
     stage_derived_artifact,
     stage_evidence_unit,
-    stage_raw_capture,
+    stage_source_capture,
     stage_source_identity,
 )
 from dra.verification_gate import (
@@ -272,10 +272,10 @@ async def _build_claim_bundle(
                         redist_allowed=True,
                         metadata=spec.get("source_metadata"),
                     )
-                    raw_eid = await stage_raw_capture(
-                        session, bundle_id, acq, raw_hash, sid,
+                    raw_eid = await stage_source_capture(
+                        session, bundle_id, acq, sid, raw_hash,
                         kind="repo_snapshot", mime_type="text/plain",
-                        stored_at=f"/store/raw_{i}",
+                        final_url=f"/store/raw_{i}",
                     )
                     await add_prov_edge(
                         session, generated_entity_id=raw_eid, activity_id=acq,

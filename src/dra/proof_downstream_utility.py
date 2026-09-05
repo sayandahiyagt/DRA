@@ -441,7 +441,7 @@ _TASK_POOL: tuple[GroundTruthTask, ...] = (
                      "repo: sayandahiyagt/DRA; module: src/dra/investigators/__init__.py."),
             FactSpec("f:investigator:module_boundary", "module_boundary",
                      "InvestigatorContext exposes stage_source_identity, "
-                     "stage_raw_capture, stage_implementation_entity, "
+                     "stage_source_capture, stage_implementation_entity, "
                      "stage_claim, stage_user_assertion."),
             FactSpec("f:investigator:symbol_signature", "symbol_signature",
                      "InvestigatorContext(run_id, task_id, actor, label) async context."),

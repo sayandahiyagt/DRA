@@ -13,8 +13,10 @@ Public API
   staged->canonical in a single database transaction. Any failure rolls the
   whole transaction back, so partial publishes never leave canonical
   orphans (ADR-013).
-- :func:`stage_raw_capture` / :func:`stage_claim` / :func:`add_prov_edge`
+- :func:`stage_source_capture` / :func:`stage_claim` / :func:`add_prov_edge`
    — ergonomic helpers that insert staged rows within a bundle.
+- :func:`stage_content_blob` — write durable bytes via a BlobStore and upsert
+   a ``content_blob`` row (Wave 1a, dra#78).
 - :func:`stage_implementation_entity` — stage a code/entity reference
    discovered by an investigator (dra#23, §13.4).
 - :func:`stage_user_assertion` — stage a versioned human/maintainer assertion
@@ -32,6 +34,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from dra.db import engine
+from dra.storage import BlobStore
 
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -206,27 +209,151 @@ async def _insert_prov_entity(
     return row.scalar_one()
 
 
-async def stage_raw_capture(
+async def stage_content_blob(
+    session: AsyncSession,
+    hash: str,
+    data: bytes | None,
+    mime_type: str | None,
+    size_bytes: int | None,
+    blob_store: BlobStore | None,
+) -> str | None:
+    """Stage a content-addressed blob via the BlobStore + ``content_blob`` table.
+
+    Writes *data* through *blob_store* when both are supplied and upserts the
+    ``content_blob`` row keyed by *hash* (``ON CONFLICT DO NOTHING`` — the blob
+    is immutable, identical bytes never change metadata).  When *data* or
+    *blob_store* is absent (e.g. synthetic test fixtures) a ``memory://``
+    placeholder URI is written so the FK from ``source_capture`` /
+    ``derived_artifact`` remains satisfiable.
+
+    Returns the ``storage_uri`` (or ``None`` if only the DB row was created).
+    """
+    if data is not None and blob_store is not None:
+        storage_uri = await blob_store.put(data, hash, mime_type)
+    else:
+        storage_uri = f"memory://{hash}"
+    await session.execute(
+        text(
+            "INSERT INTO content_blob (hash, size, mime_type, storage_uri, "
+            "encryption_metadata, created_at) "
+            "VALUES (:hash, :size, :mime, :uri, :meta, now()) "
+            "ON CONFLICT (hash) DO NOTHING"
+        ),
+        {
+            "hash": hash,
+            "size": size_bytes,
+            "mime": mime_type,
+            "uri": storage_uri,
+            "meta": _json({}),
+        },
+    )
+    return storage_uri
+
+
+async def stage_source_capture(
     session: AsyncSession,
     bundle_id: UUID,
     activity_id: UUID,
-    content_hash: str,
     source_id: UUID,
+    content_hash: str,
     kind: str,
-    state: str = "staged",
+    *,
+    blob_store: BlobStore | None = None,
+    data: bytes | None = None,
     size_bytes: int | None = None,
     mime_type: str | None = None,
-    stored_at: str | None = None,
+    captured_at: str | None = None,
+    final_url: str | None = None,
+    redirect_chain: list[dict[str, Any]] | None = None,
+    method: str | None = None,
+    provider: str | None = None,
+    http_metadata: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
+    state: str = "staged",
 ) -> UUID:
-    """Stage an immutable, content-addressed raw capture (ADR-004).
+    """Stage a content-addressed source capture (§43 model, dra#78 Wave 1a).
 
-    The primary key *is* ``content_hash`` so re-staging the same capture is
-    idempotent (ON CONFLICT DO NOTHING semantics rely on this PK).
+    Replaces the deprecated ``stage_raw_capture``: routes bytes through a
+    :class:`~dra.storage.BlobStore` and a ``ContentBlob`` (deduped by sha256)
+    referenced by a new ``SourceCapture`` row, while *also* writing a backward-
+    compatible ``raw_capture`` row so existing readers (knowledge.py,
+    verification_gate.py, handoff.py) keep working during the deprecation
+    window.
+
+    The provenance ``prov_entity`` is created with ``entity_kind='raw_capture'``
+    (no new enum value — preserves the dra#14 byte-stability contract) and its
+    UUID id is reused as ``source_capture.capture_id`` so the
+    ``_DOMAIN_STATE_TABLES`` mirror join ``pe.id = source_capture.capture_id``
+    holds.  Returns the prov_entity id.
     """
     entity_id = await _insert_prov_entity(
         session, bundle_id, "raw_capture", activity_id, content_hash, None, state, metadata
     )
+
+    # 1. Stage the content blob (durable bytes + content_blob row).
+    await stage_content_blob(
+        session, content_hash, data, mime_type, size_bytes, blob_store
+    )
+
+    # 2. Stage a source_representation (canonical URL + HTTP/access metadata).
+    representation_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO source_representation (id, content_blob_hash, "
+            "canonical_url, origin, publisher, http_status, http_headers, "
+            "access_metadata, retrieved_at) "
+            "VALUES (:id, :hash, :url, :origin, :pub, :status, :hdrs, "
+            ":am, :ret) "
+            "ON CONFLICT (id) DO NOTHING"
+        ),
+        {
+            "id": str(representation_id),
+            "hash": content_hash,
+            "url": final_url,
+            "origin": None,
+            "pub": None,
+            "status": (http_metadata or {}).get("status"),
+            "hdrs": _json(http_metadata),
+            "am": _json({}),
+            "ret": captured_at,
+        },
+    )
+
+    # 3. Stage the source_capture (authoritative acquisition event).
+    await session.execute(
+        text(
+            "INSERT INTO source_capture (capture_id, source_identity_id, "
+            "representation_id, content_blob_hash, kind, state, captured_at, "
+            "final_url, redirect_chain, method, provider, http_metadata, "
+            "size_bytes, mime_type, created_at, metadata) "
+            "VALUES (:cid, :src, :rep, :hash, :kind, :state, "
+            "COALESCE(:capt, now()), :url, :chain, :method, :prov, "
+            ":httpm, :sz, :mime, now(), :meta) "
+            "ON CONFLICT (capture_id) DO UPDATE SET "
+            "state = EXCLUDED.state"
+        ),
+        {
+            "cid": str(entity_id),
+            "src": str(source_id),
+            "rep": str(representation_id),
+            "hash": content_hash,
+            "kind": kind,
+            "state": state,
+            "capt": captured_at,
+            "url": final_url,
+            "chain": _json(redirect_chain),
+            "method": method,
+            "prov": provider,
+            "httpm": _json(http_metadata),
+            "sz": size_bytes,
+            "mime": mime_type,
+            "meta": _json(metadata),
+        },
+    )
+
+    # 4. Backward-compatible raw_capture row (deprecated, kept for readers that
+    #    still JOIN through raw_capture).  stored_at is marked obsolete — prefer
+    #    content_blob.storage_uri for durable location.
     await session.execute(
         text(
             "INSERT INTO raw_capture (content_hash, source_id, kind, "
@@ -241,11 +368,12 @@ async def stage_raw_capture(
             "kind": kind,
             "mime": mime_type,
             "size": size_bytes,
-            "stored": stored_at,
+            "stored": final_url,
             "state": state,
             "meta": _json(metadata),
         },
     )
+
     return entity_id
 
 
@@ -468,20 +596,38 @@ async def stage_source_identity(
     not get a ``prov_entity`` row of its own — its acquisition provenance is
     recorded via the ``acquisition`` prov_activity that generated the
     associated raw capture. Returns the new source id.
+
+    Uses a concurrency-safe ``ON CONFLICT (normalized_key)`` upsert (§41/§159):
+    identical (kind, locator, version) tuples return the existing id rather than
+    inserting a duplicate.  Nullable scalar fields are merged with ``COALESCE``
+    so an existing row's populated values are never clobbered by a re-staging
+    with a partial attribute set; ``metadata`` is merged via JSONB
+    concatenation.
     """
+    normalized_key = f"{kind}:{locator}:{version or ''}"
     source_id = uuid.uuid4()
-    await session.execute(
+    row = await session.execute(
         text(
             "INSERT INTO source_identity (id, kind, locator, version, "
-            "license_spdx, access_basis, crawl_allowed, auth_scope, "
-            "redist_allowed, created_at, metadata) "
-            "VALUES (:id, :kind, :loc, :ver, :lic, :ab, :cl, :as_, :rd, now(), :meta)"
+            "normalized_key, license_spdx, access_basis, crawl_allowed, "
+            "auth_scope, redist_allowed, created_at, metadata) "
+            "VALUES (:id, :kind, :loc, :ver, :nk, :lic, :ab, :cl, :as_, "
+            ":rd, now(), :meta) "
+            "ON CONFLICT (normalized_key) DO UPDATE SET "
+            "license_spdx = COALESCE(source_identity.license_spdx, EXCLUDED.license_spdx), "
+            "access_basis = COALESCE(source_identity.access_basis, EXCLUDED.access_basis), "
+            "crawl_allowed = COALESCE(source_identity.crawl_allowed, EXCLUDED.crawl_allowed), "
+            "auth_scope = COALESCE(source_identity.auth_scope, EXCLUDED.auth_scope), "
+            "redist_allowed = COALESCE(source_identity.redist_allowed, EXCLUDED.redist_allowed), "
+            "metadata = source_identity.metadata || EXCLUDED.metadata "
+            "RETURNING id"
         ),
         {
             "id": str(source_id),
             "kind": kind,
             "loc": locator,
             "ver": version,
+            "nk": normalized_key,
             "lic": license_spdx,
             "ab": access_basis,
             "cl": crawl_allowed,
@@ -490,7 +636,7 @@ async def stage_source_identity(
             "meta": _json(metadata),
         },
     )
-    return source_id
+    return row.scalar_one()
 
 
 async def stage_crawl_manifest_entry(
@@ -925,7 +1071,7 @@ async def _validate_entity_links(session: AsyncSession, entity_id: UUID, kind: s
     checks = {
         "derived_artifact": (
             "SELECT 1 FROM derived_artifact da "
-            "JOIN raw_capture rc ON rc.content_hash = da.source_capture_hash "
+            "JOIN content_blob cb ON cb.hash = da.source_capture_hash "
             "WHERE da.id = :e"
         ),
         "evidence_unit": (
@@ -951,8 +1097,11 @@ async def _validate_entity_links(session: AsyncSession, entity_id: UUID, kind: s
 
 # (domain_table, entity_kind, join_clause) — raw_capture is content-addressed
 # (PK = content_hash), so it joins prov_entity on content_hash rather than id.
+# source_capture reuses the prov_entity UUID as its capture_id (set by
+# stage_source_capture), joining on pe.id — the authoritative Wave 1a link.
 _DOMAIN_STATE_TABLES = (
     ("raw_capture",       "raw_capture",       "pe.content_hash = raw_capture.content_hash"),
+    ("source_capture",    "raw_capture",       "pe.id = source_capture.capture_id"),
     ("derived_artifact",  "derived_artifact",  "pe.id = derived_artifact.id"),
     ("evidence_unit",     "evidence_unit",     "pe.id = evidence_unit.id"),
     ("implementation_entity", "implementation_entity", "pe.id = implementation_entity.id"),
@@ -973,6 +1122,9 @@ async def _mirror_state_canonical(session: AsyncSession, bundle_id: UUID) -> Non
     Each domain table's primary key equals the matching prov_entity column
     (its UUID id, except raw_capture whose PK is ``content_hash``). Joining on
     (entity_kind, bundle_id, state) flips only this bundle's validated rows.
+    ``source_capture`` reuses the prov_entity UUID as ``capture_id`` (set by
+    :func:`stage_source_capture`), so it joins on ``pe.id`` like the other UUID-
+    PK domain tables.
     """
     for table, kind, join in _DOMAIN_STATE_TABLES:
         await session.execute(

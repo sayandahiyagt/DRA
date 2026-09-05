@@ -623,12 +623,13 @@ class VisualReviewer:
             page_zero_based = page_num - 1
             png_bytes = renderer.render_page(pdf_bytes, page_zero_based)
             page_image_hash = content_hash(png_bytes)
-            await ctx.stage_raw_capture(
-                page_image_hash,
+            await ctx.stage_source_capture(
                 source_id,
+                page_image_hash,
                 "image",
                 mime_type="image/png",
                 size_bytes=len(png_bytes),
+                data=png_bytes,
                 metadata={
                     "paper_version": version,
                     "element_type": grobid_elem.element_type,
@@ -774,10 +775,11 @@ class PaperInvestigator:
             )
 
             raw_hash = content_hash(pdf_bytes)
-            raw_eid = await ctx.stage_raw_capture(
-                raw_hash, source_id, "pdf",
+            raw_eid = await ctx.stage_source_capture(
+                source_id, raw_hash, "pdf",
                 mime_type="application/pdf",
                 size_bytes=len(pdf_bytes),
+                data=pdf_bytes,
             )
 
             review_activity = await ctx.create_activity(

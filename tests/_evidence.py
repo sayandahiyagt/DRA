@@ -23,7 +23,7 @@ from dra.publish import (
     stage_gap,
     stage_handoff,
     stage_implementation_entity,
-    stage_raw_capture,
+    stage_source_capture,
     stage_source_identity,
 )
 
@@ -42,7 +42,9 @@ async def reset() -> None:
                 text(
                     "TRUNCATE TABLE handoff_statement, gap, decision, "
                     "implementation_entity, claim, topic_relationship, topic, "
-                    "evidence_unit, derived_artifact, raw_capture, source_identity, "
+                    "evidence_unit, derived_artifact, source_capture, "
+                    "source_representation, content_blob, raw_capture, "
+                    "source_identity, "
                     "prov_derivation, prov_generation, prov_entity, prov_activity, "
                     "prov_bundle, prov_agent RESTART IDENTITY CASCADE"
                 )
@@ -72,9 +74,9 @@ async def build_lineage_bundle(
                 crawl_allowed=True, redist_allowed=True,
             )
             acq = await create_activity(session, bundle_id, "acquisition", ACTOR)
-            raw_eid = await stage_raw_capture(
-                session, bundle_id, acq, RAW_HASH, source_id,
-                kind="repo_snapshot", mime_type="text/plain", stored_at="/store/raw",
+            raw_eid = await stage_source_capture(
+                session, bundle_id, acq, source_id, RAW_HASH,
+                kind="repo_snapshot", mime_type="text/plain", final_url="/store/raw",
             )
             await add_prov_edge(session, generated_entity_id=raw_eid, activity_id=acq)
 
@@ -161,9 +163,9 @@ async def build_implementation_bundle(
                 crawl_allowed=True, redist_allowed=True,
             )
             acq = await create_activity(session, bundle_id, "acquisition", ACTOR)
-            raw_eid = await stage_raw_capture(
-                session, bundle_id, acq, RAW_HASH, source_id,
-                kind="repo_snapshot", mime_type="text/plain", stored_at="/store/raw",
+            raw_eid = await stage_source_capture(
+                session, bundle_id, acq, source_id, RAW_HASH,
+                kind="repo_snapshot", mime_type="text/plain", final_url="/store/raw",
             )
             await add_prov_edge(session, generated_entity_id=raw_eid, activity_id=acq)
 
@@ -259,9 +261,9 @@ async def build_topic_bundle(
             crawl_allowed=True, redist_allowed=True,
         )
         acq = await create_activity(session, bundle_id, "acquisition", ACTOR)
-        raw_eid = await stage_raw_capture(
-            session, bundle_id, acq, RAW_HASH, source_id,
-            kind="repo_snapshot", mime_type="text/plain", stored_at="/store/raw",
+        raw_eid = await stage_source_capture(
+            session, bundle_id, acq, source_id, RAW_HASH,
+            kind="repo_snapshot", mime_type="text/plain", final_url="/store/raw",
         )
         await add_prov_edge(session, generated_entity_id=raw_eid, activity_id=acq)
 

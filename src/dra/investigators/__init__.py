@@ -9,13 +9,18 @@ Provides the single way all investigators capture evidence:
 - :func:`normalize_locator` / :func:`validate_locator` — pure helpers that
   normalize and validate locator dicts against ``LOCATOR_SHAPES``.
 - :class:`InvestigatorContext` — async orchestrator that opens a bundle,
-  records the acquisition + parsing ``prov_activity`` rows with the
-  responsible agent, batches staged domain rows, and commits them via
-  :func:`dra.publish.publish_bundle`, raising :class:`PublishError` on
-  failure.
+    records the acquisition + parsing ``prov_activity`` rows with the
+    responsible agent, batches staged domain rows, and commits them via
+    :func:`dra.publish.publish_bundle`, raising :class:`PublishError` on
+    failure.
 
 The package is DB-free except for :class:`InvestigatorContext` (which delegates
 to :mod:`dra.publish`). The pure helpers can be unit-tested without Postgres.
+
+A default :class:`~dra.storage.FilesystemBlobStore` is bound to each
+:class:`InvestigatorContext` so investigators do not need to construct one
+explicitly; pass ``blob_store=...`` to override (e.g. with an
+:class:`~dra.storage.S3BlobStore` for production).
 """
 
 from __future__ import annotations
@@ -37,12 +42,12 @@ from dra.publish import (
     stage_evidence_unit,
     stage_gap,
     stage_implementation_entity,
-    stage_raw_capture,
+    stage_source_capture,
     stage_source_identity,
     stage_user_assertion,
     publish_bundle,
 )
-
+from dra.storage import default_blob_store
 __all__ = [
     "content_hash",
     "LOCATOR_SHAPES",
@@ -57,7 +62,7 @@ __all__ = [
 def content_hash(data: str | bytes) -> str:
     """Return the sha256 hex digest of *data*.
 
-    Used as the ``raw_capture`` primary key and as
+    Used as the ``content_blob`` primary key and as
     ``evidence_unit.content_hash`` (ADR-004).  Accepts ``str`` or ``bytes``
     and always returns 64 lowercase hex characters — the format validated by
     :func:`dra.publish.publish_bundle` (publish.py:620-625).
@@ -142,7 +147,7 @@ class InvestigatorContext:
             run_id="r1", task_id="t1", actor={"external_id": "investigator-1"}
         ) as ctx:
             src = await ctx.stage_source_identity("repo", "https://example.com/r")
-            raw = await ctx.stage_raw_capture(content_hash(b"snap"), src, "repo_snapshot")
+            cap = await ctx.stage_source_capture(src, content_hash(b"snap"), "repo_snapshot")
             ei = await ctx.stage_implementation_entity(src, "symbol", path="m.py", symbol_name="f")
     """
 
@@ -150,6 +155,9 @@ class InvestigatorContext:
     task_id: str
     actor: dict[str, Any]
     label: str | None = None
+    blob_store: Any = field(
+        default_factory=default_blob_store
+    )  # BlobStore abstraction (dra#78 Wave 1a); FilesystemBlobStore by default.
     published_count: int | None = field(default=None, init=False)
     _bundle_id: UUID | None = field(default=None, init=False)
     _session: Any = field(default=None, init=False)
@@ -222,29 +230,44 @@ class InvestigatorContext:
             metadata=metadata,
         )
 
-    async def stage_raw_capture(
+    async def stage_source_capture(
         self,
-        content_hash: str,
         source_id: UUID,
+        content_hash: str,
         kind: str,
         *,
+        blob_store: Any | None = None,
+        data: bytes | None = None,
         state: str = "staged",
         size_bytes: int | None = None,
         mime_type: str | None = None,
-        stored_at: str | None = None,
+        captured_at: str | None = None,
+        final_url: str | None = None,
+        redirect_chain: list[dict[str, Any]] | None = None,
+        method: str | None = None,
+        provider: str | None = None,
+        http_metadata: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
-        entity_id = await stage_raw_capture(
+        store = blob_store if blob_store is not None else self.blob_store
+        entity_id = await stage_source_capture(
             self._session,
             self._bundle_id,
             self._acquisition_activity,
-            content_hash,
             source_id,
+            content_hash,
             kind,
+            blob_store=store,
+            data=data,
             state=state,
             size_bytes=size_bytes,
             mime_type=mime_type,
-            stored_at=stored_at,
+            captured_at=captured_at,
+            final_url=final_url,
+            redirect_chain=redirect_chain,
+            method=method,
+            provider=provider,
+            http_metadata=http_metadata,
             metadata=metadata,
         )
         await add_prov_edge(

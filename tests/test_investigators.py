@@ -211,9 +211,9 @@ def test_investigator_context_auto_publishes():
                 crawl_allowed=True, redist_allowed=True,
             )
             raw_hash = content_hash("snapshot-bytes")
-            await ctx.stage_raw_capture(
-                raw_hash, source_id, "repo_snapshot",
-                mime_type="text/plain", stored_at="/store/ctx",
+            await ctx.stage_source_capture(
+                source_id, raw_hash, "repo_snapshot",
+                mime_type="text/plain", final_url="/store/ctx",
             )
             da_eid = await ctx.stage_derived_artifact(
                 raw_hash, content_hash("derived"), "parsed", version=1,
@@ -279,8 +279,8 @@ def test_investigator_context_rollback_on_error():
                     "repo", "https://example.com/err",
                     license_spdx="MIT", access_basis="public",
                 )
-                await ctx.stage_raw_capture(
-                    content_hash("snap"), source_id, "repo_snapshot",
+                await ctx.stage_source_capture(
+                    source_id, content_hash("snap"), "repo_snapshot",
                 )
                 # Bypass the context wrapper to inject a malformed
                 # content_hash so publish_bundle raises PublishError.
