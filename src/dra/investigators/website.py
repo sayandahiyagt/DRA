@@ -7,10 +7,28 @@ rendered DOM → accessibility tree → interactive session → screenshots →
 network/HAR), and enforces the §22 / ADR-015 access-policy gate on every
 acquisition.
 
+Wave 1b (dra#79) rewrites the evidence-emission contract using the Part 1
+storage model, fixing the four behavioral flaws in evolution spec §36–39:
+
+- **§36/§156** — ``source_identity`` is keyed by the exact canonical resource URL
+  (the page URL), not the site origin; origin/publisher are recorded as metadata
+  on ``source_representation`` so multiple pages on one site no longer collapse.
+- **§37** — each search-engine snippet is bound to its own ``returned_url`` via a
+  ``SourceCandidate`` record rather than attaching it to the investigated target
+  URL path.
+- **§38/§39** — discovery & acquisition observations (search_snippet, raw_html,
+  screenshot, network_har) are separated from ``EvidenceUnit``→``Claim``:
+  discovery rungs emit ``SourceCandidate`` / ``source_capture`` rows only, never
+  a researched claim, unless the provider contract guarantees authoritative full
+  content.
+- **§D4** — HTML/screenshot/HAR raw bytes are persisted durably via the
+  ``content_blob.storage_uri`` (BlobStore), not the non-durable ``stored_at``
+  temp path.
+
 Evidence is emitted exclusively through an :class:`~dra.investigators.InvestigatorContext`:
-raw captures keyed by ``content_hash``, a normalized extracted-text derived
-artifact, ``evidence_unit``s with ``web`` locators, and ``claim``s — never
-equating DOM/network observation with private source truth.
+content-addressed ``source_capture`` rows, ``SourceCandidate`` discovery records,
+normalized derived artifacts, ``evidence_unit``s with ``web`` locators, and
+``claim``s — never equating DOM/network observation with private source truth.
 
 Offline-first: by default the investigator uses the deterministic fakes from
 ``make_providers(ProviderMode.OFFLINE)`` so the capture → evidence_unit → claim
@@ -23,10 +41,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
-from uuid import UUID
+from typing import Any
 from urllib.parse import urlparse
+from uuid import UUID
 
 from dra.investigators import (
     InvestigatorContext,
@@ -35,8 +54,8 @@ from dra.investigators import (
     validate_locator,
 )
 from dra.investigators.access_policy import (
-    AccessPolicyGate,
     DEFAULT_USER_AGENT,
+    AccessPolicyGate,
     RobotsPolicy,
     SourceAccessBasis,
 )
@@ -82,20 +101,26 @@ class _LadderStep:
     name: str
     label: str
     requires_har_auth: bool  # step 8 (network/HAR) is authorized-only
+    is_discovery: bool  # True = acquisition/discovery observation (§38/§39)
 
 
 #: Ordered escalation ladder (§11.4 / spec §17.1).  Each rung has a distinct
 #: evidence label so downstream consumers can weight reliability rather than
 #: treating every observation as ground truth.
+#:
+#: ``is_discovery`` separates §38/§39 discovery & acquisition observations
+#: (search_snippet, raw_html, screenshot, network_har — no EvidenceUnit→Claim)
+#: from content rungs that feed reasoning (extracted_text, rendered_dom,
+#: accessibility_tree, interactive_session — keep EvidenceUnit, asserts_private_truth=False).
 LADDER_STEPS: tuple[_LadderStep, ...] = (
-    _LadderStep(1, "search_snippet", "network-observed", False),
-    _LadderStep(2, "extracted_text", "visible UI", False),
-    _LadderStep(3, "raw_html", "direct DOM", False),
-    _LadderStep(4, "rendered_dom", "direct DOM", False),
-    _LadderStep(5, "accessibility_tree", "accessibility-tree", False),
-    _LadderStep(6, "interactive_session", "inferred frontend architecture", False),
-    _LadderStep(7, "screenshot", "visible UI", False),
-    _LadderStep(8, "network_har", "network-observed", True),
+    _LadderStep(1, "search_snippet", "network-observed", False, is_discovery=True),
+    _LadderStep(2, "extracted_text", "visible UI", False, is_discovery=False),
+    _LadderStep(3, "raw_html", "direct DOM", False, is_discovery=True),
+    _LadderStep(4, "rendered_dom", "direct DOM", False, is_discovery=False),
+    _LadderStep(5, "accessibility_tree", "accessibility-tree", False, is_discovery=False),
+    _LadderStep(6, "interactive_session", "inferred frontend architecture", False, is_discovery=False),
+    _LadderStep(7, "screenshot", "visible UI", False, is_discovery=True),
+    _LadderStep(8, "network_har", "network-observed", True, is_discovery=True),
 )
 
 
@@ -142,6 +167,7 @@ class InvestigationResult:
     examined_urls: list[str] = field(default_factory=list)
     skipped_urls: list[dict[str, Any]] = field(default_factory=list)
     manifest_entries: list[dict[str, Any]] = field(default_factory=list)
+    discovery_count: int = 0
     evidence_unit_count: int = 0
     claim_count: int = 0
     published_count: int | None = None
@@ -339,7 +365,7 @@ class WebsiteInvestigator:
                 break
             try:
                 content = await self._run_step(
-                    ctx, source_id, url, origin, policy, query, step
+                    ctx, source_id, url, origin, policy, query, task_type, step
                 )
             except _SkipStep:
                 self._log_manifest(
@@ -365,8 +391,11 @@ class WebsiteInvestigator:
                 content_hash=content_hash(content) if content is not None else None,
             )
             last_content = content if isinstance(content, str) else None
-            result.evidence_unit_count += 1
-            result.claim_count += 1
+            if step.is_discovery:
+                result.discovery_count += 1
+            else:
+                result.evidence_unit_count += 1
+                result.claim_count += 1
             if needs_more is not None and not needs_more(last_content):
                 break
 
@@ -378,7 +407,7 @@ class WebsiteInvestigator:
         policy = await self._gate_evaluate(url, task_type=task_type)
         source_id = await ctx.stage_source_identity(
             kind="web",
-            locator=origin,
+            locator=url,
             version=None,
             license_spdx=policy["license_spdx"],
             access_basis=policy["access_basis"],
@@ -387,6 +416,7 @@ class WebsiteInvestigator:
             redist_allowed=policy["redist_allowed"],
             metadata={
                 "user_agent": self.user_agent,
+                "origin": origin,
                 "robots_directive": policy["robots_directive"],
                 "rate_limit": policy["rate_limit"],
                 "sitemaps": policy["sitemaps"],
@@ -456,23 +486,43 @@ class WebsiteInvestigator:
         origin: str,
         policy: dict[str, Any],
         query: str,
+        task_type: str,
         step: _LadderStep,
     ) -> Any:
         """Execute one ladder rung; return the raw content (or raise _SkipStep)."""
         label = step.label
         if step.name == "search_snippet":
-            content = await self._snippet(query)
-            await self._record_capture(
-                ctx, source_id, url, "text", content, label=label,
-                step=step.name,
-                claim_text=f"[{label}] Search index returned: {content[:200]}",
-                mime="text/plain", dom_locator="search-result",
+            result = await self._snippet(query)
+            if not result:
+                raise _SkipStep()
+            returned_url = result.get("url", "")
+            snippet = result.get("snippet", "") or ""
+            await ctx.stage_source_candidate(
+                query=query,
+                purpose=task_type,
+                provider=(
+                    self.providers["search"].name
+                    if "search" in self.providers
+                    else None
+                ),
+                title=result.get("title"),
+                returned_url=returned_url,
+                snippet=snippet if snippet else None,
+                rank=result.get("rank", 0),
+                provider_score=result.get("score"),
+                origin=_origin(returned_url) if returned_url else None,
+                metadata={
+                    "evidence_label": label,
+                    "ladder_step": step.name,
+                    "task_type": task_type,
+                },
             )
-            return content
+            return snippet
         if step.name == "extracted_text":
             text = await self._extract(url)
-            await self._record_capture(
-                ctx, source_id, url, "text", text, label=label, step=step.name,
+            await self._record_evidence(
+                ctx, source_id, url, origin, "text", text, label=label,
+                step=step.name,
                 claim_text=f"[{label}] Visible text extracted: {text[:200]}",
                 mime="text/plain", dom_locator="document", derived_text=text,
             )
@@ -481,19 +531,17 @@ class WebsiteInvestigator:
             fetched = await self._fetch(url)
             html = fetched.get("content", "")
             mime = fetched.get("mime_type") or "text/html"
-            await self._record_capture(
-                ctx, source_id, url, "html", html, label=label,
-                step=step.name,
-                claim_text=f"[{label}] Raw markup captured from {url}",
-                mime=mime, dom_locator="document",
+            await self._record_acquisition_capture(
+                ctx, source_id, url, origin, "html", html, label=label,
+                step=step.name, mime=mime, dom_locator="document",
             )
             return html
         if step.name == "rendered_dom":
             dom = await self._dom_snapshot(url)
             if not dom:
                 raise _SkipStep()
-            await self._record_capture(
-                ctx, source_id, url, "html", dom, label=label,
+            await self._record_evidence(
+                ctx, source_id, url, origin, "html", dom, label=label,
                 step=step.name,
                 claim_text=f"[{label}] Rendered DOM captured from {url}",
                 mime="text/html", dom_locator="rendered-document",
@@ -503,8 +551,8 @@ class WebsiteInvestigator:
             xml = await self._accessibility(url)
             if not xml:
                 raise _SkipStep()
-            await self._record_capture(
-                ctx, source_id, url, "xml", xml, label=label,
+            await self._record_evidence(
+                ctx, source_id, url, origin, "xml", xml, label=label,
                 step=step.name,
                 claim_text=f"[{label}] Accessibility tree observed for {url}",
                 mime="application/xml", dom_locator="ax-tree",
@@ -514,8 +562,8 @@ class WebsiteInvestigator:
             observed = await self._interact(url)
             if not observed:
                 raise _SkipStep()
-            await self._record_capture(
-                ctx, source_id, url, "text", observed,
+            await self._record_evidence(
+                ctx, source_id, url, origin, "text", observed,
                 label="inferred frontend architecture", step=step.name,
                 claim_text=f"[speculation] Frontend architecture inferred from {url}",
                 mime="text/plain", dom_locator="interactive-state",
@@ -526,37 +574,39 @@ class WebsiteInvestigator:
             img = await self._screenshot(url)
             if not img:
                 raise _SkipStep()
-            await self._record_capture(
-                ctx, source_id, url, "image", img, label=label,
-                step=step.name,
-                claim_text=f"[{label}] Screenshot evidence captured for {url}",
-                mime="image/png", dom_locator="viewport",
+            await self._record_acquisition_capture(
+                ctx, source_id, url, origin, "image", img, label=label,
+                step=step.name, mime="image/png", dom_locator="viewport",
             )
             return img
         if step.name == "network_har":
             har = await self._network_capture(url)
             if not har:
                 raise _SkipStep()
-            await self._record_capture(
-                ctx, source_id, url, "xml", har, label=label,
-                step=step.name,
-                claim_text=f"[{label}] Network/HAR observed for {url}",
-                mime="application/json", dom_locator="network-log",
+            await self._record_acquisition_capture(
+                ctx, source_id, url, origin, "xml", har, label=label,
+                step=step.name, mime="application/json", dom_locator="network-log",
             )
             return har
         raise _SkipStep()
 
     # -- provider delegations ----------------------------------------------
 
-    async def _snippet(self, query: str) -> str:
+    async def _snippet(self, query: str) -> dict[str, Any] | None:
+        """Return the full first search result dict (url + snippet + score).
+
+        Returns the complete result so the caller can bind the snippet to its
+        own ``returned_url`` as a SourceCandidate (§37) rather than attaching it
+        to the investigated target URL path.
+        """
         search = self.providers.get("search")
         if search is None:
-            return ""
+            return None
         results = await search.search(query, k=5)
         if not results:
-            return ""
+            return None
         first = results[0] if isinstance(results[0], dict) else {}
-        return first.get("snippet", "") or ""
+        return first or None
 
     async def _extract(self, url: str) -> str:
         content = self.providers.get("content")
@@ -609,11 +659,56 @@ class WebsiteInvestigator:
 
     # -- capture staging ----------------------------------------------------
 
-    async def _record_capture(
+    async def _record_acquisition_capture(
         self,
         ctx: InvestigatorContext,
         source_id: UUID,
         url: str,
+        origin: str,
+        kind: str,
+        content: str | bytes,
+        *,
+        label: str,
+        step: str,
+        mime: str | None = None,
+        dom_locator: str = "document",
+    ) -> str:
+        """Stage raw acquisition bytes only (§39: acquisition is an observation).
+
+        Used by discovery/acquisition-observation rungs (``raw_html``,
+        ``screenshot``, ``network_har``): stages a durable ``source_capture``
+        (content_blob + source_representation + source_capture) with
+        ``origin``/``publisher`` on the representation (§156), but does **not**
+        create a ``derived_artifact`` / ``evidence_unit`` / ``claim``.  These are
+        acquisition-provenance events, not researched conclusions (§39).
+        """
+        if content is None:
+            content = b"" if isinstance(content, bytes) else ""
+        raw_h = content_hash(content)
+        await ctx.stage_source_capture(
+            source_id,
+            raw_h,
+            kind=kind,
+            mime_type=mime,
+            data=content.encode("utf-8") if isinstance(content, str) else content,
+            final_url=url,
+            origin=origin,
+            publisher=None,
+            metadata={
+                "evidence_label": label,
+                "ladder_step": step,
+                "canonical_url": url,
+                "asserts_private_truth": False,
+            },
+        )
+        return raw_h
+
+    async def _record_evidence(
+        self,
+        ctx: InvestigatorContext,
+        source_id: UUID,
+        url: str,
+        origin: str,
         kind: str,
         content: str | bytes,
         *,
@@ -625,11 +720,13 @@ class WebsiteInvestigator:
         derived_text: str | None = None,
         confidence: float | None = None,
     ) -> tuple[str, UUID, UUID, UUID]:
-        """Stage raw → derived → evidence_unit → claim for one observation.
+        """Stage raw → derived → evidence_unit → claim for one observation (§38/§39).
 
-        The claim is tagged with its evidence label and explicitly records
-        ``asserts_private_truth=False`` so no DOM/network observation is ever
-        reified as source-of-truth.
+        Used by content rungs that feed reasoning (``extracted_text``,
+        ``rendered_dom``, ``accessibility_tree``, ``interactive_session``): these
+        keep ``EvidenceUnit``→``Claim`` but the claim is tagged with its evidence
+        label and records ``asserts_private_truth=False`` so no DOM/network
+        observation is reified as source-of-truth.
         """
         if content is None:
             content = ""
@@ -641,6 +738,8 @@ class WebsiteInvestigator:
             mime_type=mime,
             data=content.encode("utf-8") if isinstance(content, str) else content,
             final_url=url,
+            origin=origin,
+            publisher=None,
             metadata={
                 "evidence_label": label,
                 "ladder_step": step,
