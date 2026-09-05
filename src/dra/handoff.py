@@ -428,7 +428,9 @@ async def canonical_ids_by_run(
     Mirrors the provenance-join shape used in
     ``tests/test_repo_control_plane_e2e.py``: ``prov_bundle(run_id) ->
     prov_entity(entity_kind, state) -> domain row``.  ``source_identity`` has
-    no prov_entity row, so it joins through ``raw_capture``'s entity.
+    no prov_entity row, so it joins through the ``source_capture`` prov_entity
+    (whose ``capture_id`` reuses the prov_entity UUID, set by
+    ``stage_source_capture``).
     """
     snapshots = (
         await session.execute(
@@ -436,9 +438,9 @@ async def canonical_ids_by_run(
                 "SELECT si.locator, si.version, si.kind, si.license_spdx, "
                 "si.access_basis "
                 "FROM source_identity si "
-                "JOIN raw_capture rc ON rc.source_id = si.id "
+                "JOIN source_capture sc ON sc.source_identity_id = si.id "
                 "JOIN prov_entity pe ON pe.entity_kind='raw_capture' "
-                "AND pe.content_hash = rc.content_hash "
+                "AND pe.id = sc.capture_id "
                 "JOIN prov_bundle pb ON pb.id = pe.bundle_id "
                 "WHERE pb.run_id = :r AND pe.state = 'canonical'"
             ),
@@ -525,15 +527,15 @@ async def canonical_ids_by_run(
             }
         )
 
-    # derivation: derived_artifact -> raw_capture (source_capture_hash)
+    # derivation: derived_artifact -> content_blob (source_capture_hash)
     derivation_rows = (
         await session.execute(
             text(
-                "SELECT da.id AS derived_id, rc.content_hash AS raw_hash "
+                "SELECT da.id AS derived_id, cb.hash AS source_hash "
                 "FROM derived_artifact da "
                 "JOIN prov_entity pe ON pe.entity_kind='derived_artifact' AND pe.id=da.id "
                 "JOIN prov_bundle pb ON pb.id=pe.bundle_id "
-                "JOIN raw_capture rc ON rc.content_hash = da.source_capture_hash "
+                "LEFT JOIN content_blob cb ON cb.hash = da.source_capture_hash "
                 "WHERE pb.run_id = :r AND pe.state='canonical'"
             ),
             {"r": run_id},
@@ -543,7 +545,7 @@ async def canonical_ids_by_run(
         lineage.append(
             {
                 "source": str(row["derived_id"]),
-                "target": str(row["raw_hash"]),
+                "target": str(row["source_hash"]),
                 "kind": "derivation",
                 "relation": "derived-from",
             }

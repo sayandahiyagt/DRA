@@ -127,12 +127,12 @@ _CLAIM_TEMPLATES = {
         ("Escalation tier is part of the ResearchTask budget allocation", True),
     ],
     "audit": [
-        ("raw_capture PK is content_hash per ADR-004 (dra#14)", True),
+        ("source_capture.capture_id is the prov_entity UUID (Wave 1a, dra#78)", True),
         ("derived_artifact has a vector_embedding enum tag but no embedding column", True),
         ("prov_entity.state uses the evidence_state enum", True),
         ("prov_bundle ties run_id and task_id together", True),
         ("PublishError is raised not retried for integrity validation failures", True),
-        ("raw_capture PK is a UUID with gen_random_uuid()", False),
+        ("source_capture.capture_id is content_hash", False),
         ("State machine transitions are non-transactional per ADR-013", False),
         ("derived_artifact uses ON CONFLICT on (content_hash, kind, version)", True),
         ("evidence_unit requires a valid upstream artifact link to publish", True),
@@ -192,7 +192,7 @@ _ROLE_QUESTIONS = {
         "Which dashboards surface model/provider cost by role per §32?",
     ],
     ExpensiveRole.FINAL_AUDIT: [
-        "Verify: does raw_capture use content_hash as PK per ADR-004?",
+        "Verify: is source_capture.capture_id the prov_entity UUID (Wave 1a)?",
         "Verify: is PublishError retried or raised on integrity failure?",
         "Confirm: does derived_artifact use evidence_state for its state column?",
     ],
@@ -229,9 +229,12 @@ _ROLE_CONTEXTS = {
         "human interruptions. §32 dashboards expose model/provider cost by role."
     ),
     ExpensiveRole.FINAL_AUDIT: (
-        "Per dra#14 handoff: raw_capture PK=content_hash (content-addressed), "
-        "PublishError is raised not retried, prov_entity.state uses evidence_state, "
-        "and state-machine transitions are transactional (ADR-013)."
+        "Per Wave 1a (dra#78): source_capture.capture_id is the prov_entity UUID "
+        "(content-addressed dedupe lives on content_blob.hash), PublishError is "
+        "raised not retried, prov_entity.state uses evidence_state, and "
+        "state-machine transitions are transactional (ADR-013). raw_capture is "
+        "retained as a deprecated backward-compat shim (removal is the optional "
+        "Wave 1c follow-up)."
     ),
     ExpensiveRole.CITATION_VERDICT: (
         "ADR-008: model routing is evaluation-driven, candidates are maintained, "

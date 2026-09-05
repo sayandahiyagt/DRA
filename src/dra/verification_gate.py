@@ -515,8 +515,9 @@ async def _existing_contradiction_topics(conn, topic_id: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # Fetch a supporting evidence unit together with its derived artifact, the
-# upstream raw capture and the source identity (one JOIN per evidence unit —
-# content is always bound as data parameters, never string-interpolated).
+# upstream source_capture (via content_blob) and the source identity (one JOIN
+# per evidence unit — content is always bound as data parameters, never
+# string-interpolated).
 _EVIDENCE_FETCH_SQL = """
     SELECT
     eu.id               AS ev_id,
@@ -528,16 +529,17 @@ _EVIDENCE_FETCH_SQL = """
     da.source_capture_hash,
     da.valid_to         AS da_valid_to,
     da.staleness_policy AS da_staleness_policy,
-    rc.source_id        AS source_id,
-    rc.state            AS rc_state,
+    sc.source_identity_id AS source_id,
+    sc.state            AS rc_state,
     si.kind             AS source_kind,
     si.access_basis     AS access_basis,
     si.metadata         AS source_metadata,
     si.locator          AS source_locator
 FROM evidence_unit eu
 JOIN derived_artifact da ON da.id = eu.artifact_id
-LEFT JOIN raw_capture rc ON rc.content_hash = da.source_capture_hash
-LEFT JOIN source_identity si ON si.id = rc.source_id
+LEFT JOIN content_blob cb ON cb.hash = da.source_capture_hash
+LEFT JOIN source_capture sc ON sc.content_blob_hash = cb.hash
+LEFT JOIN source_identity si ON si.id = sc.source_identity_id
 WHERE eu.id = :ev_id
 """
 

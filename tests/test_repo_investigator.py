@@ -4,7 +4,7 @@ Pure unit tests (no DB) assert tree-sitter symbol extraction, the §13.4 repo
 locator contract, and the sandbox capability-detection / static-only degrade.
 DB-gated tests (reusing ``tests/_db.py`` + ``tests/_evidence.py`` reset
 convention) stage a real local git repo snapshot and assert canonical
-publication + an ``evidence_unit -> derived_artifact -> raw_capture ->
+publication + an ``evidence_unit -> derived_artifact -> source_capture ->
 source_identity`` provenance traversal (mirroring
 ``test_provenance_traversal.py``'s ``LINEAGE_CHAIN_QUERY`` shape).
 """
@@ -175,8 +175,8 @@ SELECT
     si.locator               AS source_locator,
     si.kind                  AS source_kind,
     si.license_spdx          AS license,
-    rc.content_hash          AS raw_hash,
-    rc.kind                  AS raw_kind,
+    cb.hash                  AS raw_hash,
+    sc.kind                  AS raw_kind,
     da.content_hash          AS derived_hash,
     eu.id                    AS evidence_id,
     eu.locator               AS evidence_locator,
@@ -184,10 +184,11 @@ SELECT
     pb.run_id
 FROM evidence_unit eu
 JOIN derived_artifact      da ON da.id = eu.artifact_id
-JOIN raw_capture           rc ON rc.content_hash = da.source_capture_hash
-JOIN source_identity       si ON si.id = rc.source_id
+JOIN content_blob       cb ON cb.hash = da.source_capture_hash
+JOIN source_capture     sc ON sc.content_blob_hash = cb.hash
+JOIN source_identity    si ON si.id = sc.source_identity_id
 JOIN prov_entity re          ON re.entity_kind = 'raw_capture'
-                              AND re.content_hash = rc.content_hash
+                               AND re.id = sc.capture_id
 JOIN prov_activity pa       ON pa.id = re.produced_by_activity
 JOIN prov_bundle pb         ON pb.id = pa.bundle_id
 WHERE eu.id = :ev_id
@@ -220,7 +221,7 @@ def test_repo_investigator_publishes_canonical(tmp_path, monkeypatch):
         assert ctx.published_count is not None and ctx.published_count >= 4
         # Snapshot is a deterministic function of the tree (idempotent re-runs):
         # re-hashing the working tree yields the same content_hash recorded in
-        # the result / raw_capture PK.
+        # the result / content_blob hash (content-addressed dedupe root).
         from dra.investigators.repo import _make_snapshot
         recompute_hash = content_hash(_make_snapshot(repo_path)[0])
         assert recompute_hash == res.snapshot_hash
@@ -246,10 +247,12 @@ def test_repo_investigator_publishes_canonical(tmp_path, monkeypatch):
             )
             assert impl_state == "canonical"
 
-            # snapshot raw_capture exists and is canonical.
+            # snapshot source_capture exists and is canonical.
             raw_kind = await s.scalar(
                 text(
-                    "SELECT kind FROM raw_capture WHERE content_hash = :h"
+                    "SELECT sc.kind FROM source_capture sc "
+                    "JOIN content_blob cb ON sc.content_blob_hash = cb.hash "
+                    "WHERE cb.hash = :h"
                 ),
                 {"h": res.snapshot_hash},
             )
@@ -274,7 +277,7 @@ def test_repo_investigator_publishes_canonical(tmp_path, monkeypatch):
 @DB
 @pytest.mark.usefixtures("_isolated_async_engine")
 def test_repo_investigator_provenance_traversal(tmp_path, monkeypatch):
-    """An evidence_unit traverses back to source_identity + raw_capture.
+    """An evidence_unit traverses back to source_identity + source_capture.
 
     Exercises the same §21.2 lineage chain shape as
     ``test_provenance_traversal.py``::LINEAGE_CHAIN_QUERY but anchored on an

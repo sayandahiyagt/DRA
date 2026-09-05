@@ -580,7 +580,7 @@ async def build_corrupted_artifact(
     run_id: str = "run_adv_d",
     task_id: str = "task_adv_d",
 ) -> dict[str, uuid.UUID | str]:
-    """ADR-021 rule 1 (entailment-failure): the raw_capture is intact, but the
+    """ADR-021 rule 1 (entailment-failure): the source capture is intact, but the
     derived_artifact is flagged corrupted (``state='rejected'`` + metadata), so
     the claim derived from it fails the deterministic entailment predicate.
     """

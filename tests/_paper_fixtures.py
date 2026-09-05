@@ -82,7 +82,7 @@ async def build_paper_bundle(
 ) -> tuple[UUID, dict[str, UUID]]:
     """Stage a complete paper investigation bundle (§11.3, §16.2).
 
-    Stages a paper source_identity + raw_capture (pdf) + grobid_tei derived
+    Stages a paper source_identity + source_capture (pdf) + grobid_tei derived
     artifact + docling_document derived artifact + evidence_units (with paper
     locators) + a visual_review activity + page image + gap + claims, all in one
     bundle.  Returns ``(bundle_id, ids)`` where ``ids`` maps prov_entity ids to

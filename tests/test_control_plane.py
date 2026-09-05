@@ -522,9 +522,9 @@ def test_parallel_isolation_no_duplicate_canonical(tmp_path):
     """Two concurrent fan-out workers on identical bytes must yield ONE canonical row.
 
     Each worker opens its own ``InvestigatorContext`` bundle; the dedupe that
-    makes the guarantee hold is ``raw_capture.content_hash`` PK with
-    ``ON CONFLICT DO UPDATE`` (publish.py:234). The assertion is on
-    ``raw_capture`` (content-addressed canonical dedupe point), NOT
+    makes the guarantee hold is ``content_blob.hash`` PK with
+    ``ON CONFLICT DO UPDATE`` (publish.py stage_content_blob). The assertion is on
+    ``content_blob`` (the content-addressed dedupe root), NOT
     ``prov_entity`` (which is a per-bundle UUID PK and would NOT dedupe).
     """
     from dra.investigators import content_hash
@@ -554,18 +554,18 @@ def test_parallel_isolation_no_duplicate_canonical(tmp_path):
         )
         assert r1.status == B_COMPLETE, r1.errors
         assert r2.status == B_COMPLETE, r2.errors
-        # Both committed; the single content_hash row is canonical exactly once.
+        # Both committed; the content-addressed bytes dedupe to a single
+        # content_blob (content-addressed dedupe root).
         from sqlalchemy import text
 
         async with async_session() as s:
             cnt = await s.scalar(
                 text(
-                    "SELECT count(*) FROM raw_capture "
-                    "WHERE content_hash = :h AND state = 'canonical'"
+                    "SELECT count(*) FROM content_blob WHERE hash = :h"
                 ),
                 {"h": raw_hash},
             )
-        assert cnt == 1, {"raw_capture canonical count": cnt, "hash": raw_hash}
+        assert cnt == 1, {"content_blob count": cnt, "hash": raw_hash}
     asyncio.run(run())
 
 
@@ -753,7 +753,7 @@ def test_p11_emits_full_research_tasks():
 
     gap = {
         "gap_id": "gap:0",
-        "description": "No content-addressed evidence was staged (no canonical raw_capture).",
+        "description": "No content-addressed evidence was staged (no canonical source_capture).",
         "severity": "high",
         "impact": 2,
         "blocking": True,
@@ -915,20 +915,25 @@ def test_reresearch_worker_dispatches_via_run_branch_worker(tmp_path):
         br = out["branch_results"][0]
         assert br["status"] == B_COMPLETE, br
         assert br["evidence_ids"], br
-        # Canonical raw_capture staged for the deterministic bytes (content-addressed).
+        # Canonical source_capture staged for the deterministic bytes
+        # (content-addressed dedupe lives on content_blob; the capture is
+        # promoted to canonical via source_capture.state, mirrored by
+        # _DOMAIN_STATE_TABLES).
         raw_hash = content_hash(raw_bytes)
         async with async_session() as s:
             cnt = await s.scalar(
                 text(
-                    "SELECT count(*) FROM raw_capture rc "
+                    "SELECT count(*) FROM source_capture sc "
+                    "JOIN content_blob cb ON sc.content_blob_hash = cb.hash "
                     "JOIN prov_entity pe ON pe.entity_kind='raw_capture' "
-                    "AND pe.content_hash=rc.content_hash "
-                    "JOIN prov_bundle pb ON pb.id=pe.bundle_id "
-                    "WHERE pb.run_id=:r AND rc.state='canonical' AND rc.content_hash=:h"
+                    "AND pe.id = sc.capture_id "
+                    "JOIN prov_bundle pb ON pb.id = pe.bundle_id "
+                    "WHERE pb.run_id=:r AND sc.state='canonical' "
+                    "AND cb.hash=:h"
                 ),
                 {"r": "run-reroute-direct", "h": raw_hash},
             )
-        assert cnt == 1, {"canonical raw_capture": cnt}
+        assert cnt == 1, {"canonical source_capture": cnt}
 
     asyncio.run(run())
 
@@ -944,7 +949,7 @@ def test_reresearch_loop_closes_end_to_end(tmp_path, monkeypatch):
     Round 0 uses a repo source whose ref is an invalid local path, so
     RepositoryInvestigator fails (B_BLOCKED, no evidence) -> p10 emits blocking
     gap:0/gap:1 -> p11 dispatches capture re-research tasks -> the capture
-    fallback stages canonical raw_capture -> p7 rebuilds claims -> p10 re-runs
+    fallback stages canonical source_capture -> p7 rebuilds claims -> p10 re-runs
     with evidence+claims -> no blocking gaps -> p11 -> p12 -> COMPLETE.
     """
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -1006,21 +1011,23 @@ def test_reresearch_loop_closes_end_to_end(tmp_path, monkeypatch):
         assert state.get("reresearch_round") >= 1, state.get("reresearch_round")
 
         # (AC3/4) New canonical evidence persisted for the re-research tasks
-        # (raw_capture staged through publish_bundle — outside checkpoint state).
+        # (source_capture staged through publish_bundle — outside checkpoint
+        # state; source_capture.state is flipped to canonical by
+        # _mirror_state_canonical).
         async with async_session() as s:
             cnt = await s.scalar(
                 text(
                     "SELECT count(*) FROM source_identity si "
-                    "JOIN raw_capture rc ON rc.source_id = si.id "
+                    "JOIN source_capture sc ON sc.source_identity_id = si.id "
                     "JOIN prov_entity pe ON pe.entity_kind='raw_capture' "
-                    "AND pe.content_hash=rc.content_hash "
-                    "JOIN prov_bundle pb ON pb.id=pe.bundle_id "
-                    "WHERE pb.run_id=:r AND rc.state='canonical' "
+                    "AND pe.id = sc.capture_id "
+                    "JOIN prov_bundle pb ON pb.id = pe.bundle_id "
+                    "WHERE pb.run_id=:r AND sc.state='canonical' "
                     "AND si.locator LIKE 'reresearch:%'"
                 ),
                 {"r": thread_id},
             )
-        assert cnt >= 1, f"no canonical raw_capture evidence for re-research (run {thread_id})"
+        assert cnt >= 1, f"no canonical source_capture evidence for re-research (run {thread_id})"
 
         # (AC5) Relevant claims rebuilt from the new evidence.
         claims = state.get("claims") or []

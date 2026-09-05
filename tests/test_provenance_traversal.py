@@ -1,6 +1,6 @@
 """Provenance-traversal tests (§21.2 reconstruction chain, ADR-014).
 
-Builds the full lineage chain end-to-end (raw capture -> derived artifact ->
+Builds the full lineage chain end-to-end (source capture -> derived artifact ->
 evidence unit -> claim -> decision -> handoff_statement) plus the W3C-PROV
 entity/activity/agent/bundle edges, then asserts two backward traversals
 reconstruct the complete chain back to the source identity and the run/bundle.
@@ -26,8 +26,8 @@ SELECT
     si.locator               AS source_locator,
     si.kind                 AS source_kind,
     si.license_spdx         AS license,
-    rc.content_hash         AS raw_hash,
-    rc.kind                 AS raw_kind,
+    cb.hash                 AS raw_hash,
+    sc.kind                 AS raw_kind,
     da.content_hash         AS derived_hash,
     eu.content_hash         AS evidence_hash,
     c.text                  AS claim_text,
@@ -45,9 +45,10 @@ JOIN decision              d  ON d.id = h.decision_id
 JOIN claim                 c  ON c.id = d.claim_id
 JOIN evidence_unit         eu ON eu.id = c.evidence_unit_id
 JOIN derived_artifact      da ON da.id = eu.artifact_id
-JOIN raw_capture           rc ON rc.content_hash = da.source_capture_hash
-JOIN source_identity       si ON si.id = rc.source_id
-JOIN prov_entity           re ON re.entity_kind = 'raw_capture' AND re.content_hash = rc.content_hash
+JOIN content_blob       cb ON cb.hash = da.source_capture_hash
+JOIN source_capture     sc ON sc.content_blob_hash = cb.hash
+JOIN source_identity    si ON si.id = sc.source_identity_id
+JOIN prov_entity        re ON re.entity_kind = 'raw_capture' AND re.id = sc.capture_id
 JOIN prov_activity         pa ON pa.id = re.produced_by_activity
 JOIN prov_bundle           pb ON pb.id = pa.bundle_id
 JOIN prov_agent            ag ON ag.id = pa.agent_id
@@ -105,7 +106,8 @@ def test_backward_domain_chain_reconstruction():
 
 
 def test_derivation_graph_traversal():
-    """Recursive prov_derivation walk reaches raw_capture from the handoff entity."""
+    """Recursive prov_derivation walk reaches the source capture (prov_entity
+    entity_kind='raw_capture') from the handoff entity."""
     async def run():
         await reset()
         bundle_id, ids = await build_lineage_bundle()
@@ -120,7 +122,8 @@ def test_derivation_graph_traversal():
             kinds = [r[0] for r in rows.fetchall()]
 
         # The derivation chain from handoff must reach back through decision,
-        # claim, evidence_unit, derived_artifact, raw_capture.
+        # claim, evidence_unit, derived_artifact, source capture (entity_kind
+        #='raw_capture').
         for expected in (
             "handoff", "decision", "claim", "evidence_unit",
             "derived_artifact", "raw_capture",

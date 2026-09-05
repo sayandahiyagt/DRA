@@ -5,7 +5,7 @@ Phase 3 synthesis (-> repo-source ResearchTask) → Phase 5 branch_worker dispat
 (-> RepositoryInvestigator) → InvestigatorContext.__aexit__ → publish_bundle
 (ADR-013 staged→canonical) to emit the canonical provenance chain:
 
-    source_identity(repo) → raw_capture(repo_snapshot) →
+    source_identity(repo) → source_capture(repo_snapshot) →
     derived_artifact(symbol index) → evidence_unit(repo@commit:path:symbol) →
     implementation_entity → behavioral claim
 
@@ -85,25 +85,26 @@ def _isolated_async_engine(monkeypatch):
 # SQL templates for provenance verification
 # ---------------------------------------------------------------------------
 
-# Source identity + raw capture lineage for a run — source_identity does NOT
-# have its own prov_entity row (§21.2), so it joins through raw_capture's
-# prov_entity back to prov_bundle.
+# Source identity + source_capture lineage for a run — source_identity does NOT
+# have its own prov_entity row (§21.2), so it joins through the source_capture
+# prov_entity (capture_id = prov_entity UUID, entity_kind='raw_capture') back to
+# prov_bundle.
 _RUN_SOURCE_LINEAGE = """
 SELECT
     si.locator       AS source_locator,
     si.kind          AS source_kind,
     si.version       AS source_version,
     si.license_spdx  AS license,
-    rc.content_hash  AS raw_hash,
-    rc.kind          AS raw_kind,
-    rc.state         AS raw_state,
-    rc.size_bytes    AS raw_size,
+    sc.content_blob_hash  AS raw_hash,
+    sc.kind          AS raw_kind,
+    sc.state         AS raw_state,
+    sc.size_bytes    AS raw_size,
     pb.id            AS bundle_id
 FROM source_identity si
-JOIN raw_capture rc      ON rc.source_id = si.id
-JOIN prov_entity pe_raw  ON pe_raw.entity_kind = 'raw_capture'
-                        AND pe_raw.content_hash = rc.content_hash
-JOIN prov_bundle pb      ON pb.id = pe_raw.bundle_id
+JOIN source_capture sc     ON sc.source_identity_id = si.id
+JOIN prov_entity pe_raw    ON pe_raw.entity_kind = 'raw_capture'
+                         AND pe_raw.id = sc.capture_id
+JOIN prov_bundle pb       ON pb.id = pe_raw.bundle_id
 WHERE pb.run_id = :run_id
 """
 
@@ -262,13 +263,13 @@ def test_repo_control_plane_e2e(tmp_path, monkeypatch):
             assert src["source_locator"] == repo_path
             assert src["license"] == "MIT"
 
-            # raw_capture (kind=repo_snapshot, content_hash deterministic)
+            # source_capture (kind=repo_snapshot, content_hash deterministic)
             raw_rows = (await s.execute(text(_RUN_SOURCE_LINEAGE), {"run_id": thread_id})).mappings().all()
             assert raw_rows[0]["raw_kind"] == "repo_snapshot"
             assert raw_rows[0]["raw_state"] == "canonical"
             snapshot_hash = raw_rows[0]["raw_hash"]
 
-            # derived_artifact (kind=parsed, symbol index, chains to raw_capture)
+            # derived_artifact (kind=parsed, symbol index, chains to source_capture)
             da_rows = (await s.execute(text(_RUN_DERIVED), {"run_id": thread_id})).mappings().all()
             assert any(d["derived_kind"] == "parsed" for d in da_rows), da_rows
             symbol_index = next(d for d in da_rows if d["derived_kind"] == "parsed")
@@ -315,7 +316,7 @@ def test_repo_control_plane_e2e(tmp_path, monkeypatch):
             rows = lineage.mappings().all()
             assert len(rows) == 1  # one repo source
             assert rows[0]["source_kind"] == "repo"
-            assert rows[0]["raw_kind"] == "repo_snapshot"
+            assert rows[0]["raw_kind"] == "repo_snapshot"  # source_capture.kind
 
         # (e) §33 handoff: p13 staged a canonical handoff_statement (dra#42)
         async with async_session() as s:
@@ -487,8 +488,8 @@ def test_repo_control_plane_e2e_direct_branch_worker(tmp_path, monkeypatch):
             si_row = (await s.execute(text(
                 "SELECT si.kind, si.version, si.locator, si.license_spdx "
                 "FROM source_identity si "
-                "JOIN raw_capture rc ON rc.source_id = si.id "
-                "JOIN prov_entity pe ON pe.entity_kind = 'raw_capture' AND pe.content_hash = rc.content_hash "
+                "JOIN source_capture sc ON sc.source_identity_id = si.id "
+                "JOIN prov_entity pe ON pe.entity_kind = 'raw_capture' AND pe.id = sc.capture_id "
                 "JOIN prov_bundle pb ON pb.id = pe.bundle_id "
                 "WHERE pb.run_id = 'run-direct' AND si.locator = :loc"
             ), {"loc": repo_path})).mappings().first()
@@ -497,17 +498,17 @@ def test_repo_control_plane_e2e_direct_branch_worker(tmp_path, monkeypatch):
             assert si_row["version"] == sha
             assert si_row["license_spdx"] == "MIT"
 
-            # raw_capture: repo_snapshot, canonical
+            # source_capture: repo_snapshot, canonical
             rc_row = (await s.execute(text(
-                "SELECT rc.kind, rc.state FROM raw_capture rc "
-                "JOIN prov_entity pe ON pe.entity_kind = 'raw_capture' AND pe.content_hash = rc.content_hash "
+                "SELECT sc.kind, sc.state FROM source_capture sc "
+                "JOIN prov_entity pe ON pe.entity_kind = 'raw_capture' AND pe.id = sc.capture_id "
                 "JOIN prov_bundle pb ON pb.id = pe.bundle_id "
                 "WHERE pb.run_id = 'run-direct'"
             ))).mappings().first()
             assert rc_row["kind"] == "repo_snapshot"
             assert rc_row["state"] == "canonical"
 
-            # derived_artifact: parsed (symbol index), canonical, chains to raw_capture
+            # derived_artifact: parsed (symbol index), canonical, chains to source_capture
             da_rows = (await s.execute(text(
                 "SELECT da.kind, da.content_hash, da.state, da.source_capture_hash "
                 "FROM derived_artifact da "
@@ -548,8 +549,8 @@ def test_repo_control_plane_e2e_direct_branch_worker(tmp_path, monkeypatch):
                 "FROM implementation_entity ie "
                 "WHERE ie.repo_source_id IN ("
                 "  SELECT si.id FROM source_identity si "
-                "  JOIN raw_capture rc ON rc.source_id = si.id "
-                "  JOIN prov_entity pe ON pe.entity_kind = 'raw_capture' AND pe.content_hash = rc.content_hash "
+                "  JOIN source_capture sc ON sc.source_identity_id = si.id "
+                "  JOIN prov_entity pe ON pe.entity_kind = 'raw_capture' AND pe.id = sc.capture_id "
                 "  JOIN prov_bundle pb ON pb.id = pe.bundle_id "
                 "  WHERE pb.run_id = 'run-direct'"
                 ")"

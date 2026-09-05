@@ -1,6 +1,6 @@
 """Shared fixture builder for evidence-graph tests.
 
-Builds a canonical §21.2 lineage bundle (source_identity -> raw capture ->
+Builds a canonical §21.2 lineage bundle (source_identity -> source capture ->
 derived artifact -> evidence unit -> claim -> decision -> handoff) with full
 W3C-PROV generation + derivation edges, all staged inside one bundle.
 """
