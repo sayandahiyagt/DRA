@@ -1,29 +1,28 @@
-"""v2 canonical schema baseline (Wave 0 + Wave 1a, sayandahiyagt/dra#59/#78).
+"""v3 canonical schema baseline (Wave 0 + Wave 1a + Wave 1b, sayandahiyagt/dra#59/#78/#79).
 
-Locks the Wave 1a canonical schema as the v2 ``knowledge_schema_version``
+Locks the Wave 1b canonical schema as the v3 ``knowledge_schema_version``
 baseline so that any later schema wave which alters the canonical object set
 without bumping the version fails this gate. SKIP if Postgres is unreachable
 (env concern, not a code defect — see ``tests/_db.py`` / spec §21).
 
-The v2 object set below adds the three Wave 1a content/capture tables
-(``content_blob``, ``source_representation``, ``source_capture``) to the frozen
-v1 set.  The signature assertion additionally locks the DB seed in ``0010``
-against the accessor in ``dra.schema_version`` — a future wave that changes an
-enum value or adds a table without a version bump changes
-``dra.schema_version.canonical_v2_signature()``, which must then match a new
-migration seed + version bump or this test fails.
+The v3 object set below adds the ``source_candidate`` discovery table (§140,
+dra#79) to the frozen v2 enumeration so the v3 baseline is pinned
+independently of later edits to the introspection test.  The signature
+assertion additionally locks the DB seed in ``0011`` against the accessor in
+``dra.schema_version`` — a future wave that changes a table or enum value without
+a version bump changes ``dra.schema_version.canonical_v3_signature()``, which
+must then match a new migration seed + version bump or this test fails.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-import pytest
 from sqlalchemy import text
 
 from dra.schema_version import (
-    canonical_v2_signature,
-    V2_EXPECTED_TABLES,
+    V3_EXPECTED_TABLES,
+    canonical_v3_signature,
 )
 from tests._db import DB, async_session
 
@@ -39,10 +38,10 @@ async def _q(sql: str, params: dict | None = None) -> list[tuple]:
 def _sync(sql: str, params: dict | None = None) -> list[tuple]:
     return asyncio.run(_q(sql, params))
 
-# Frozen v2 canonical object set (see module docstring).  The three Wave 1a
-# tables are added to the frozen v1 enumeration so the v2 baseline is pinned
-# independently of later edits to the introspection test.
-EXPECTED_TABLES = V2_EXPECTED_TABLES
+# Frozen v3 canonical object set (see module docstring).  The ``source_candidate``
+# discovery table is added to the frozen v2 enumeration so the v3 baseline is
+# pinned independently of later edits to the introspection test.
+EXPECTED_TABLES = V3_EXPECTED_TABLES
 
 EXPECTED_ENUMS = {
     "evidence_state": [
@@ -80,29 +79,29 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_knowledge_schema_version_is_v2():
-    """The 0010 seed locks the canonical schema to v2 + its object-set digest."""
+def test_knowledge_schema_version_is_v3():
+    """The 0011 seed locks the canonical schema to v3 + its object-set digest."""
     async def run():
         async with async_session() as session:
             from dra.schema_version import current_schema_version
 
             version, label = await current_schema_version(session)
-            assert (version, label) == (2, "v2")
+            assert (version, label) == (3, "v3")
 
             sig = (
                 await session.scalar(
                     text(
                         "SELECT canonical_signature FROM knowledge_schema_version "
-                        "WHERE version = 2"
+                        "WHERE version = 3"
                     )
                 )
             )
-            assert sig == canonical_v2_signature()
+            assert sig == canonical_v3_signature()
     _run(run())
 
 
 def test_baseline_canonical_object_set():
-    """Every v2 canonical table/enum (with its frozen value set) exists."""
+    """Every v3 canonical table/enum (with its frozen value set) exists."""
     tables = {r[0] for r in _sync(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
     )}
@@ -136,9 +135,9 @@ def test_v1_signature_still_computable():
     the v1→v2 transition.
     """
     from dra.schema_version import (
+        CANONICAL_SIGNATURE_V1,
         V1_EXPECTED_TABLES,
         canonical_v1_signature,
-        CANONICAL_SIGNATURE_V1,
     )
     assert canonical_v1_signature() == CANONICAL_SIGNATURE_V1
     assert set(V1_EXPECTED_TABLES).issubset(set(EXPECTED_TABLES))

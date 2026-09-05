@@ -26,8 +26,9 @@ explicitly; pass ``blob_store=...`` to override (e.g. with an
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 from uuid import UUID
 
 from dra.publish import (
@@ -35,6 +36,7 @@ from dra.publish import (
     add_prov_edge,
     async_session,
     create_activity,
+    publish_bundle,
     stage_bundle,
     stage_claim,
     stage_crawl_manifest_entry,
@@ -42,20 +44,21 @@ from dra.publish import (
     stage_evidence_unit,
     stage_gap,
     stage_implementation_entity,
+    stage_source_candidate,
     stage_source_capture,
     stage_source_identity,
     stage_user_assertion,
-    publish_bundle,
 )
 from dra.storage import default_blob_store
+
 __all__ = [
-    "content_hash",
     "LOCATOR_SHAPES",
-    "normalize_locator",
-    "validate_locator",
     "InvestigatorContext",
+    "content_hash",
     "create_activity",
+    "normalize_locator",
     "stage_gap",
+    "validate_locator",
 ]
 
 
@@ -165,7 +168,7 @@ class InvestigatorContext:
     _parsing_activity: UUID | None = field(default=None, init=False)
     _human_correction_activity_id: UUID | None = field(default=None, init=False)
 
-    async def __aenter__(self) -> "InvestigatorContext":
+    async def __aenter__(self) -> InvestigatorContext:
         self._bundle_id = await stage_bundle(
             self.run_id, self.task_id, self.label, self.actor
         )
@@ -247,6 +250,8 @@ class InvestigatorContext:
         method: str | None = None,
         provider: str | None = None,
         http_metadata: dict[str, Any] | None = None,
+        origin: str | None = None,
+        publisher: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> UUID:
         store = blob_store if blob_store is not None else self.blob_store
@@ -267,7 +272,9 @@ class InvestigatorContext:
             redirect_chain=redirect_chain,
             method=method,
             provider=provider,
-            http_metadata=http_metadata,
+             http_metadata=http_metadata,
+            origin=origin,
+            publisher=publisher,
             metadata=metadata,
         )
         await add_prov_edge(
@@ -428,6 +435,46 @@ class InvestigatorContext:
             metadata=metadata,
         )
 
+    async def stage_source_candidate(
+        self,
+        *,
+        query: str,
+        purpose: str | None,
+        provider: str | None,
+        title: str | None,
+        returned_url: str,
+        snippet: str | None = None,
+        rank: int | None = None,
+        provider_score: float | None = None,
+        origin: str | None = None,
+        publisher: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> UUID:
+        """Stage a SourceCandidate discovery result (§140/§141, dra#79).
+
+        Delegates to :func:`dra.publish.stage_source_candidate`, bound to the
+        context's acquisition activity (mirroring the acquisition-activity
+        binding used by :meth:`stage_crawl_manifest_entry`).  The candidate
+        carries its own ``source_representation`` keyed by ``returned_url``
+        with ``origin``/``publisher`` recorded as metadata (§156).
+        """
+        return await stage_source_candidate(
+            self._session,
+            self._bundle_id,
+            self._acquisition_activity,
+            query=query,
+            purpose=purpose,
+            provider=provider,
+            title=title,
+            returned_url=returned_url,
+            snippet=snippet,
+            rank=rank,
+            provider_score=provider_score,
+            origin=origin,
+            publisher=publisher,
+            metadata=metadata,
+        )
+
     async def _human_correction_activity(self) -> UUID:
         """Return the bundle's single ``human_correction`` prov_activity.
 
@@ -553,17 +600,18 @@ class InvestigatorContext:
 
 # Late-bound re-export (imported at the bottom to avoid a circular import:
 # dra.investigators.website imports InvestigatorContext from this package).
-from dra.investigators.website import WebsiteInvestigator  # noqa: E402
+from dra.investigators.website import WebsiteInvestigator
 
 __all__ = [
-    "content_hash",
     "LOCATOR_SHAPES",
-    "normalize_locator",
-    "validate_locator",
     "InvestigatorContext",
     "WebsiteInvestigator",
-    "stage_crawl_manifest_entry",
-    "stage_user_assertion",
+    "content_hash",
     "create_activity",
+    "normalize_locator",
+    "stage_crawl_manifest_entry",
     "stage_gap",
+    "stage_source_candidate",
+    "stage_user_assertion",
+    "validate_locator",
 ]

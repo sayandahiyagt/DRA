@@ -20,23 +20,26 @@ from typing import Any
 from sqlalchemy import text
 
 __all__ = [
-    "SCHEMA_VERSION",
-    "SCHEMA_VERSION_LABEL",
     "CANONICAL_SIGNATURE_V1",
     "CANONICAL_SIGNATURE_V2",
+    "CANONICAL_SIGNATURE_V3",
+    "SCHEMA_VERSION",
+    "SCHEMA_VERSION_LABEL",
+    "V1_EXPECTED_ENUMS",
     "V1_EXPECTED_TABLES",
     "V2_EXPECTED_TABLES",
-    "V1_EXPECTED_ENUMS",
+    "V3_EXPECTED_TABLES",
     "canonical_v1_signature",
     "canonical_v2_signature",
+    "canonical_v3_signature",
     "current_schema_version",
 ]
 
 # The Wave 0 canonical schema version (frozen at HEAD 5272ffdad267):
 #   0001_enable_pgvector -> ... -> 0008_interview_constraints (merge of the
 #   0007 double-head) -> 0009_knowledge_schema_baseline (this migration).
-SCHEMA_VERSION: int = 2
-SCHEMA_VERSION_LABEL: str = "v2"
+SCHEMA_VERSION: int = 3
+SCHEMA_VERSION_LABEL: str = "v3"
 
 # Frozen v1 canonical object set. This is the exact enumeration asserted by
 # ``tests/test_schema_introspection.py`` (including the 0007
@@ -72,6 +75,14 @@ V2_EXPECTED_TABLES: list[str] = V1_EXPECTED_TABLES + [
     "content_blob",
     "source_representation",
     "source_capture",
+]
+
+# Wave 1b (dra#79): the v3 canonical object set adds ``source_candidate`` — the
+# §140 discovery-result table that separates search-snippet/discovery emissions
+# from EvidenceUnit→Claim.  A new canonical table mechanically bumps the
+# ``knowledge_schema_version`` anchor to v3 (see schema_version.py:44-46).
+V3_EXPECTED_TABLES: list[str] = V2_EXPECTED_TABLES + [
+    "source_candidate",
 ]
 
 V1_EXPECTED_ENUMS: dict[str, list[str]] = {
@@ -120,6 +131,13 @@ CANONICAL_SIGNATURE_V2: str = (
     "60123f40db96eed5780c84289494c0286dd8d513692f1ce56e1d6a52eebed5ac"
 )
 
+# Precomputed digest of the v3 object set (V2 tables + ``source_candidate`` from
+# Wave 1b / dra#79).  Mirrors the seed inserted by ``0011_source_candidate``;
+# ``tests/test_schema_baseline.py`` asserts the DB row matches.
+CANONICAL_SIGNATURE_V3: str = (
+    "dd099e1c80609ab226f43354ae2640167802990e55b4a3d136fe08dad220a554"
+)
+
 
 def _object_set_payload(tables: list[str]) -> bytes:
     """Stable JSON encoding of a canonical object set (sorted)."""
@@ -153,6 +171,16 @@ def canonical_v2_signature() -> str:
     ``tests/test_schema_baseline.py`` asserts the DB row matches.
     """
     return hashlib.sha256(_object_set_payload(V2_EXPECTED_TABLES)).hexdigest()
+
+
+def canonical_v3_signature() -> str:
+    """SHA-256 digest of the v3 canonical object set.
+
+    The v3 set is ``V2_EXPECTED_TABLES`` plus ``source_candidate`` (Wave 1b,
+    dra#79).  Migration 0011 seeds ``knowledge_schema_version`` with this digest;
+    ``tests/test_schema_baseline.py`` asserts the DB row matches.
+    """
+    return hashlib.sha256(_object_set_payload(V3_EXPECTED_TABLES)).hexdigest()
 
 
 async def current_schema_version(session: Any) -> tuple[int, str]:

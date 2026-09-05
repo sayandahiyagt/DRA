@@ -36,19 +36,19 @@ ACTOR = {"kind": "model", "name": "gpt", "version": "1.0", "external_id": "gpt-1
 
 
 async def reset() -> None:
-    async with async_session() as session:
-        async with session.begin():
-            await session.execute(
-                text(
-                    "TRUNCATE TABLE handoff_statement, gap, decision, "
-                    "implementation_entity, claim, topic_relationship, topic, "
-                    "evidence_unit, derived_artifact, source_capture, "
-                    "source_representation, content_blob, raw_capture, "
-                    "source_identity, "
-                    "prov_derivation, prov_generation, prov_entity, prov_activity, "
-                    "prov_bundle, prov_agent RESTART IDENTITY CASCADE"
-                )
+    async with async_session() as session, session.begin():
+        await session.execute(
+            text(
+                 "TRUNCATE TABLE handoff_statement, gap, decision, "
+                 "implementation_entity, claim, topic_relationship, topic, "
+                 "evidence_unit, derived_artifact, source_capture, "
+                 "source_representation, content_blob, raw_capture, "
+                 "source_candidate, "
+                 "source_identity, "
+                 "prov_derivation, prov_generation, prov_entity, prov_activity, "
+                 "prov_bundle, prov_agent RESTART IDENTITY CASCADE"
             )
+        )
 
 
 async def build_lineage_bundle(

@@ -15,6 +15,8 @@ Public API
   orphans (ADR-013).
 - :func:`stage_source_capture` / :func:`stage_claim` / :func:`add_prov_edge`
    — ergonomic helpers that insert staged rows within a bundle.
+- :func:`stage_source_candidate` — discover a search-engine snippet/returned URL
+   as a SourceCandidate (§140) without reifying it as a Claim (§38/§39, dra#79).
 - :func:`stage_content_blob` — write durable bytes via a BlobStore and upsert
    a ``content_blob`` row (Wave 1a, dra#78).
 - :func:`stage_implementation_entity` — stage a code/entity reference
@@ -74,33 +76,32 @@ async def stage_bundle(
     rows, within a single transaction.
     """
     actor = actor or {}
-    async with async_session() as session:
-        async with session.begin():
-            agent_id = await _resolve_or_create_agent(session, actor)
-            bundle_result = await session.execute(
-                text(
-                    "INSERT INTO prov_bundle (run_id, task_id, label) "
-                    "VALUES (:run_id, :task_id, :label) RETURNING id"
-                ),
-                {"run_id": run_id, "task_id": task_id, "label": label},
-            )
-            bundle_id: UUID = bundle_result.scalar_one()
+    async with async_session() as session, session.begin():
+        agent_id = await _resolve_or_create_agent(session, actor)
+        bundle_result = await session.execute(
+            text(
+                "INSERT INTO prov_bundle (run_id, task_id, label) "
+                "VALUES (:run_id, :task_id, :label) RETURNING id"
+            ),
+            {"run_id": run_id, "task_id": task_id, "label": label},
+        )
+        bundle_id: UUID = bundle_result.scalar_one()
 
-            await session.execute(
-                text(
-                    "INSERT INTO prov_activity (bundle_id, activity_type, "
-                    "started_at, agent_id, metadata) "
-                    "VALUES (:bundle_id, 'publication', now(), "
-                    "(:agent_id)::uuid, :metadata) RETURNING id"
-                ),
-                {
-                    "bundle_id": str(bundle_id),
-                    "agent_id": str(agent_id) if agent_id is not None else None,
-                    "metadata": _json({"run_id": run_id, "task_id": task_id}),
-                },
-            )
+        await session.execute(
+            text(
+                "INSERT INTO prov_activity (bundle_id, activity_type, "
+                "started_at, agent_id, metadata) "
+                "VALUES (:bundle_id, 'publication', now(), "
+                "(:agent_id)::uuid, :metadata) RETURNING id"
+            ),
+            {
+                "bundle_id": str(bundle_id),
+                "agent_id": str(agent_id) if agent_id is not None else None,
+                "metadata": _json({"run_id": run_id, "task_id": task_id}),
+            },
+        )
 
-            return bundle_id
+        return bundle_id
 
 
 async def create_activity(
@@ -268,6 +269,8 @@ async def stage_source_capture(
     method: str | None = None,
     provider: str | None = None,
     http_metadata: dict[str, Any] | None = None,
+    origin: str | None = None,
+    publisher: str | None = None,
     metadata: dict[str, Any] | None = None,
     state: str = "staged",
 ) -> UUID:
@@ -285,6 +288,12 @@ async def stage_source_capture(
     UUID id is reused as ``source_capture.capture_id`` so the
     ``_DOMAIN_STATE_TABLES`` mirror join ``pe.id = source_capture.capture_id``
     holds.  Returns the prov_entity id.
+
+    *origin* / *publisher* (§156) are forwarded to the
+    ``source_representation`` row so that multiple pages on one site, sharing
+    an origin, no longer collapse into a single ``source_identity`` — the
+    representation carries the exact ``final_url`` as ``canonical_url`` while
+    origin/publisher are recorded as separate metadata columns.
     """
     entity_id = await _insert_prov_entity(
         session, bundle_id, "raw_capture", activity_id, content_hash, None, state, metadata
@@ -307,11 +316,11 @@ async def stage_source_capture(
             "ON CONFLICT (id) DO NOTHING"
         ),
         {
-            "id": str(representation_id),
+             "id": str(representation_id),
             "hash": content_hash,
             "url": final_url,
-            "origin": None,
-            "pub": None,
+            "origin": origin,
+            "pub": publisher,
             "status": (http_metadata or {}).get("status"),
             "hdrs": _json(http_metadata),
             "am": _json({}),
@@ -682,7 +691,7 @@ async def stage_crawl_manifest_entry(
             "url": url,
             "origin": origin,
             "result": result,
-            "step": step,
+             "step": step,
             "reason": reason,
             "lat": latency_ms,
             "status": status,
@@ -690,6 +699,101 @@ async def stage_crawl_manifest_entry(
         },
     )
     return entry_id
+
+
+async def stage_source_candidate(
+    session: AsyncSession,
+    bundle_id: UUID,
+    activity_id: UUID | None,
+    *,
+    query: str,
+    purpose: str | None,
+    provider: str | None,
+    title: str | None,
+    returned_url: str,
+    snippet: str | None = None,
+    rank: int | None = None,
+    provider_score: float | None = None,
+    origin: str | None = None,
+    publisher: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    state: str = "staged",
+) -> UUID:
+    """Stage a SourceCandidate discovery result (§140/§141, dra#79 Wave 1b).
+
+    A SourceCandidate records a single search-engine / discovery result
+    (``returned_url`` + ``snippet``) **without** reifying it as an
+    ``EvidenceUnit``→``Claim`` (§38/§39).  Per §141 it is "not canonical source
+    evidence" — it may become a source only after selection and capture.
+
+    The candidate "carries its own ``source_representation``" (D3): a
+    ``source_representation`` row is inserted with ``canonical_url = returned_url``
+    and ``origin``/``publisher`` recorded as metadata (§156), so that multiple
+    pages on one site no longer collapse into a single identity.  The
+    ``content_blob_hash`` on the representation is left NULL — the snippet is
+    carried directly on the candidate row as a ``snippet`` TEXT column (§140),
+    and no full-content capture has been performed yet.
+
+    Delegates to the caller's acquisition ``prov_activity`` (bound via
+    ``activity_id``) within the bundle's transaction.  Returns the candidate id.
+    """
+    candidate_id = uuid.uuid4()
+
+    # 1. Stage the candidate's own source_representation, keyed by the exact
+    #    returned_url (§156 — NOT site origin).  origin/publisher are recorded as
+    #    separate columns so distinct pages on one site keep separate identities.
+    representation_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO source_representation (id, content_blob_hash, "
+            "canonical_url, origin, publisher, http_status, http_headers, "
+            "access_metadata, retrieved_at) "
+            "VALUES (:id, :hash, :url, :origin, :pub, :status, :hdrs, "
+            ":am, :ret) "
+            "ON CONFLICT (id) DO NOTHING"
+        ),
+        {
+            "id": str(representation_id),
+            "hash": None,
+            "url": returned_url,
+            "origin": origin,
+            "pub": publisher,
+            "status": None,
+            "hdrs": _json({}),
+            "am": _json({}),
+            "ret": None,
+        },
+    )
+
+    # 2. Insert the candidate row, linked to the representation.
+    await session.execute(
+        text(
+            "INSERT INTO source_candidate (candidate_id, bundle_id, "
+            "representation_id, produced_by_activity, query, purpose, provider, "
+            "title, returned_url, snippet, rank, provider_score, discovered_at, "
+            "state, metadata) "
+             "VALUES (:cid, :bid, :rep, :act, :q, :purpose, :prov, :title, "
+             ":url, :snippet, :rank, :score, COALESCE(:disc, now()), :state, :meta)"
+        ),
+        {
+            "cid": str(candidate_id),
+            "bid": str(bundle_id),
+            "rep": str(representation_id),
+            "act": str(activity_id) if activity_id is not None else None,
+            "q": query,
+            "purpose": purpose,
+            "prov": provider,
+            "title": title,
+            "url": returned_url,
+            "snippet": snippet,
+            "rank": rank,
+            "score": provider_score,
+            "disc": None,
+            "state": state,
+            "meta": _json(metadata),
+        },
+    )
+    return candidate_id
 
 
 async def stage_user_assertion(
@@ -1113,7 +1217,7 @@ _DOMAIN_STATE_TABLES = (
 # byte-stability contract (ADR-017).  Flipped to canonical via a dedicated
 # bundle-scoped UPDATE in :func:`_publish_bundle_tx`, not via the
 # ``prov_entity`` join used by ``_DOMAIN_STATE_TABLES``.
-_STANDALONE_STATE_TABLES = ("user_assertion",)
+_STANDALONE_STATE_TABLES = ("user_assertion", "source_candidate")
 
 
 async def _mirror_state_canonical(session: AsyncSession, bundle_id: UUID) -> None:

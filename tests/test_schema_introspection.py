@@ -42,6 +42,7 @@ EXPECTED_TABLES = [
     "content_blob",
     "source_representation",
     "source_capture",
+    "source_candidate",
 ]
 
 EXPECTED_ENUMS = {
@@ -103,6 +104,7 @@ EXPECTED_PKS = {
     "prov_activity": "id",
     "source_identity": "id",
     "user_assertion": "id",
+    "source_candidate": "candidate_id",
 }
 
 # (src_table, src_col, tgt_table, tgt_col) key foreign keys that must exist
@@ -150,6 +152,10 @@ KEY_FKS = [
     ("source_capture", "source_identity_id", "source_identity"),
     ("source_capture", "representation_id", "source_representation"),
     ("source_capture", "content_blob_hash", "content_blob"),
+    # Wave 1b — SourceCandidate discovery table (dra#79)
+    ("source_candidate", "bundle_id", "prov_bundle"),
+    ("source_candidate", "representation_id", "source_representation"),
+    ("source_candidate", "produced_by_activity", "prov_activity"),
 ]
 
 

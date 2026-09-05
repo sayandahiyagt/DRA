@@ -22,8 +22,8 @@ import pytest
 from sqlalchemy import text
 
 from dra.investigators import (
-    InvestigatorContext,
     LOCATOR_SHAPES,
+    InvestigatorContext,
     WebsiteInvestigator,
 )
 from dra.investigators.access_policy import (
@@ -32,21 +32,22 @@ from dra.investigators.access_policy import (
     RobotsPolicy,
     SourceAccessBasis,
 )
-from dra.investigators.website import EVIDENCE_LABELS, LADDER_STEPS
+from dra.investigators.website import EVIDENCE_LABELS, LADDER_STEPS, InvestigationResult
 from dra.publish import async_session
 from dra.routing.providers import (
+    _TASK_ROUTED_MATRIX,
     BrowserProvider,
     ContentProvider,
     ProviderMode,
     SearchProvider,
     SearchProviderRegistry,
     TaskType,
-    _TASK_ROUTED_MATRIX,
     make_providers,
 )
+from dra.storage import FilesystemBlobStore
 from tests._db import DB
-from tests._evidence import ACTOR, reset as _evidence_reset
-
+from tests._evidence import ACTOR
+from tests._evidence import reset as _evidence_reset
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -101,26 +102,33 @@ def _make_investigator(
 
 
 async def _reset() -> None:
-    """Reset the shared evidence schema + the dra#26 crawl manifest."""
+    """Reset the shared evidence schema + the dra#26 crawl manifest.
+
+    Disposes the SQLAlchemy async engine's connection pool before each DB test
+    so connections bound to a previous ``asyncio.run()`` event loop are not
+    reused (psycopg3 locks are event-loop-affine).
+    """
+    from dra.db import engine
+
+    await engine.dispose()
     await _evidence_reset()
-    async with async_session() as session:
-        async with session.begin():
-            # PostgreSQL does not support TRUNCATE IF EXISTS; the table is
-            # guaranteed present once migration 0007 is applied (DB-gated tests
-            # assume a migrated schema, per tests/_db.py convention).
-            exists = await session.scalar(
+    async with async_session() as session, session.begin():
+        # PostgreSQL does not support TRUNCATE IF EXISTS; the table is
+        # guaranteed present once migration 0007 is applied (DB-gated tests
+        # assume a migrated schema, per tests/_db.py convention).
+        exists = await session.scalar(
+            text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'web_crawl_manifest'"
+            )
+        )
+        if exists:
+            await session.execute(
                 text(
-                    "SELECT 1 FROM information_schema.tables "
-                    "WHERE table_name = 'web_crawl_manifest'"
+                    "TRUNCATE TABLE web_crawl_manifest "
+                    "RESTART IDENTITY CASCADE"
                 )
             )
-            if exists:
-                await session.execute(
-                    text(
-                        "TRUNCATE TABLE web_crawl_manifest "
-                        "RESTART IDENTITY CASCADE"
-                    )
-                )
 
 
 def _actor() -> dict:
@@ -284,14 +292,43 @@ def test_browser_provider_protocol_has_ladder_methods():
         assert callable(getattr(p, m))
 
 
+def test_ladder_steps_classify_discovery_vs_evidence():
+    """§38/§39: discovery rungs (snippet, raw_html, screenshot, network_har) are
+    is_discovery=True; content rungs that feed reasoning are is_discovery=False."""
+    discovery_names = {
+        s.name for s in LADDER_STEPS if s.is_discovery
+    }
+    evidence_names = {
+        s.name for s in LADDER_STEPS if not s.is_discovery
+    }
+    assert discovery_names == {
+        "search_snippet", "raw_html", "screenshot", "network_har"
+    }
+    assert evidence_names == {
+        "extracted_text", "rendered_dom", "accessibility_tree",
+        "interactive_session",
+    }
+
+
+def test_investigation_result_separates_discovery_and_evidence_counters():
+    """InvestigationResult keeps a distinct discovery_count from evidence counters."""
+    r = InvestigationResult(task_type="x", query="y")
+    assert r.discovery_count == 0
+    assert r.evidence_unit_count == 0
+    assert r.claim_count == 0
+    r.discovery_count += 1
+    assert r.discovery_count == 1
+    assert r.evidence_unit_count == 0
+
+
 # ===========================================================================
-# DB-GATED TESTS (require Postgres + pgvector + migration 0007)
+# DB-GATED TESTS (require Postgres + pgvector + migration 0011)
 # ===========================================================================
 
 
 @DB
 def test_access_policy_gate_staged_source_identity():
-    """The gate result is staged on source_identity (crawl_allowed/license)."""
+    """The gate result is staged on source_identity keyed by exact canonical URL (§156)."""
     url = "https://allowed.example.com/a"
 
     async def run():
@@ -314,20 +351,28 @@ def test_access_policy_gate_staged_source_identity():
                 text(
                     "SELECT access_basis, crawl_allowed, license_spdx, "
                     "auth_scope, redist_allowed, locator "
-                    "FROM source_identity WHERE kind='web' AND locator=:o"
+                    "FROM source_identity WHERE kind='web' AND locator=:u"
                 ),
-                {"o": "https://allowed.example.com"},
+                {"u": url},
             )
             r = row.mappings().one()
             assert r["crawl_allowed"] is True
             assert r["access_basis"] == SourceAccessBasis.PUBLIC.value
             assert r["license_spdx"] == "MIT"
+            # §156: locator is the exact canonical page URL, not site origin
+            assert r["locator"] == url
     asyncio.run(run())
 
 
 @DB
 def test_capture_evidence_claim_publish_path():
-    """raw_capture -> derived_artifact -> evidence_unit -> claim publishes canonical."""
+    """raw_capture -> derived_artifact -> evidence_unit -> claim publishes canonical.
+
+    With max_step=3 the ladder runs:
+      - search_snippet (discovery)  → source_candidate, NO raw_capture/evidence/claim
+      - extracted_text (evidence)   → raw_capture(text) + derived + evidence_unit + claim
+      - raw_html   (acquisition)     → raw_capture(html) + source_capture, NO evidence/claim
+    """
     url = "https://allowed.example.com/a"
 
     async def run():
@@ -357,7 +402,42 @@ def test_capture_evidence_claim_publish_path():
             )
             assert staged == 0
 
-            # 2. Raw captures emitted (snippet=text, fetch=html).
+            # 1b. No staged standalone rows remain (source_candidate flipped to
+            # canonical via _STANDALONE_STATE_TABLES).
+            cand_staged = await s.scalar(
+                text(
+                    "SELECT count(*) FROM source_candidate "
+                    "WHERE bundle_id = :b AND state = 'staged'"
+                ),
+                {"b": str(bundle_id)},
+            )
+            assert cand_staged == 0
+
+            # 2. A source_candidate was staged for the search snippet (not a
+            # raw_capture) — §37 binds the snippet to its own returned_url.
+            cands = await s.execute(
+                text(
+                    "SELECT returned_url, snippet FROM source_candidate "
+                    "WHERE query = :q"
+                ),
+                {"q": "hello"},
+            )
+            cand_rows = cands.mappings().all()
+            assert len(cand_rows) >= 1
+            for c in cand_rows:
+                assert c["returned_url"]  # bound to its own URL, not the target
+                assert c["snippet"]  # snippet text preserved
+
+            # 2b. The snippet is NOT recorded as a raw_capture (§37/§38).
+            snippet_rc = await s.scalar(
+                text(
+                    "SELECT count(*) FROM raw_capture "
+                    "WHERE metadata->>'ladder_step' = 'search_snippet'"
+                )
+            )
+            assert snippet_rc == 0
+
+            # 3. Raw captures: text (extracted_text) + html (raw_html).
             raws = await s.execute(
                 text(
                     "SELECT content_hash, kind FROM raw_capture "
@@ -369,18 +449,19 @@ def test_capture_evidence_claim_publish_path():
             assert "text" in raw_kinds
             assert "html" in raw_kinds
 
-            # 3. Derived artifacts link back to a raw capture (ADR-004 chain).
+            # 4. Derived artifacts link back to a raw capture (ADR-004 chain).
             der = await s.execute(
                 text(
                     "SELECT da.source_capture_hash, da.content_hash, da.kind "
                     "FROM derived_artifact da "
-                    "JOIN raw_capture rc ON rc.content_hash = da.source_capture_hash "
+                    "JOIN content_blob cb ON cb.hash = da.source_capture_hash "
                     "WHERE da.kind = 'normalized'"
                 )
             )
             assert len(der.mappings().all()) >= 1
 
-            # 4. Evidence units conform to the web locator shape.
+            # 5. Evidence units conform to the web locator shape (only from
+            # evidence rungs, not acquisition/discovery rungs).
             evs = await s.execute(
                 text(
                     "SELECT eu.locator FROM evidence_unit eu "
@@ -395,7 +476,7 @@ def test_capture_evidence_claim_publish_path():
                 for field_name in LOCATOR_SHAPES["web"]:
                     assert field_name in loc
 
-            # 5. Claims trace back to an evidence unit.
+            # 6. Claims trace back to an evidence unit (only from evidence rungs).
             claims = await s.execute(
                 text(
                     "SELECT c.evidence_unit_id FROM claim c "
@@ -405,6 +486,17 @@ def test_capture_evidence_claim_publish_path():
                 )
             )
             assert len(claims.mappings().all()) >= 1
+
+            # 7. Acquisition captures (raw_html) must NOT produce claims
+            # (§38/§39: acquisition observations are not researched conclusions).
+            acq_claims = await s.scalar(
+                text(
+                    "SELECT count(*) FROM claim "
+                    "WHERE metadata->>'ladder_step' IN "
+                    "('raw_html', 'screenshot', 'network_har')"
+                )
+            )
+            assert acq_claims == 0
     asyncio.run(run())
 
 
@@ -452,13 +544,14 @@ def test_rfc9309_crawl_skip_behavior():
             )
             assert n == 0
 
-            # The source identity records crawl_allowed=False.
+            # The source identity records crawl_allowed=False, keyed by the exact
+            # canonical URL (§156), not the site origin.
             si = await s.scalar(
                 text(
                     "SELECT crawl_allowed FROM source_identity "
-                    "WHERE locator = :o"
+                    "WHERE locator = :u"
                 ),
-                {"o": "https://forbidden.example.com"},
+                {"u": forbidden_url},
             )
             assert si is False
     asyncio.run(run())
@@ -529,6 +622,254 @@ def test_crawl_manifest_records_attempted_crawled():
                 r["step"] for r in manifest if r["result"] == "crawled"
             }
             assert crawled_steps, f"no crawled steps recorded: {manifest}"
+    asyncio.run(run())
+
+
+@DB
+def test_source_identity_uses_exact_canonical_url():
+    """§156: source_identity.locator is the exact canonical page URL, not origin.
+
+    Multiple pages on one site must NOT collapse into one identity.
+    """
+    url_a = "https://allowed.example.com/page1"
+    url_b = "https://allowed.example.com/page2"
+
+    async def run():
+        await _reset()
+        inv = _make_investigator()
+        async with InvestigatorContext(
+            run_id="run_url", task_id="task_url", actor=_actor()
+        ) as ctx:
+            await inv.investigate(
+                ctx,
+                task_type="dom_reasoning",
+                query="hello",
+                target_urls=[url_a, url_b],
+                max_step=3,
+            )
+        async with async_session() as s:
+            rows = await s.execute(
+                text(
+                    "SELECT locator FROM source_identity "
+                    "WHERE kind = 'web' ORDER BY locator"
+                )
+            )
+            locators = [r[0] for r in rows.fetchall()]
+            assert url_a in locators
+            assert url_b in locators
+            # The origin must NOT appear as a source_identity locator
+            assert "https://allowed.example.com" not in locators
+    asyncio.run(run())
+
+
+@DB
+def test_source_representation_records_origin_and_publisher():
+    """§156: origin/publisher are metadata on source_representation, not the locator."""
+    url = "https://allowed.example.com/a"
+
+    async def run():
+        await _reset()
+        inv = _make_investigator()
+        async with InvestigatorContext(
+            run_id="run_rep", task_id="task_rep", actor=_actor()
+        ) as ctx:
+            await inv.investigate(
+                ctx,
+                task_type="dom_reasoning",
+                query="hello",
+                target_urls=[url],
+                max_step=3,
+            )
+        async with async_session() as s:
+            # Representations linked to a source_capture whose final_url is the
+            # target URL — these carry the exact canonical page URL + origin.
+            rows = await s.execute(
+                text(
+                    "SELECT rep.origin, rep.publisher, rep.canonical_url "
+                    "FROM source_representation rep "
+                    "JOIN source_capture sc ON sc.representation_id = rep.id "
+                    "WHERE sc.final_url = :u"
+                ),
+                {"u": url},
+            )
+            found = rows.mappings().all()
+            assert len(found) >= 1
+            for r in found:
+                assert r["canonical_url"] == url
+                assert r["origin"] == "https://allowed.example.com"
+    asyncio.run(run())
+
+
+@DB
+def test_search_snippet_bound_to_source_candidate():
+    """§37: each search snippet is bound to its own returned_url via source_candidate,
+    not to the investigated target URL path."""
+    url = "https://allowed.example.com/a"
+
+    async def run():
+        await _reset()
+        inv = _make_investigator()
+        async with InvestigatorContext(
+            run_id="run_cand", task_id="task_cand", actor=_actor()
+        ) as ctx:
+            await inv.investigate(
+                ctx,
+                task_type="dom_reasoning",
+                query="hello",
+                target_urls=[url],
+                max_step=8,
+            )
+        async with async_session() as s:
+            rows = await s.execute(
+                text(
+                    "SELECT query, provider, returned_url, snippet "
+                    "FROM source_candidate"
+                )
+            )
+            cands = rows.mappings().all()
+            assert len(cands) >= 1
+            for c in cands:
+                assert c["query"] == "hello"
+                assert c["returned_url"]  # bound to its own URL
+                assert c["snippet"] is not None  # snippet text preserved
+
+            # The candidate's returned_url must differ from the target URL
+            # (the offline fake search returns https://example.org/N, not the
+            # target).  This proves the snippet is not silently attached to the
+            # investigated target identity (§37).
+            for c in cands:
+                assert c["returned_url"] != url
+    asyncio.run(run())
+
+
+@DB
+def test_acquisition_captures_have_no_claims():
+    """§38/§39: raw_html/screenshot/network_har produce source_capture + content_blob
+    rows but do NOT produce EvidenceUnit→Claim rows."""
+    url = "https://allowed.example.com/a"
+
+    async def run():
+        await _reset()
+        inv = _make_investigator(har_authorized=True)
+        async with InvestigatorContext(
+            run_id="run_acq", task_id="task_acq", actor=_actor()
+        ) as ctx:
+            await inv.investigate(
+                ctx,
+                task_type="dom_reasoning",
+                query="hello",
+                target_urls=[url],
+                max_step=8,
+            )
+        async with async_session() as s:
+            # Each acquisition rung produces a source_capture.
+            for step_name in ("raw_html", "screenshot", "network_har"):
+                sc_count = await s.scalar(
+                    text(
+                        "SELECT count(*) FROM source_capture sc "
+                        "WHERE sc.metadata->>'ladder_step' = :s"
+                    ),
+                    {"s": step_name},
+                )
+                assert sc_count >= 1, f"no source_capture for {step_name}"
+
+            # ...and each source_capture links to a resolvable content_blob.
+            blob_rows = await s.execute(
+                text(
+                    "SELECT cb.storage_uri FROM content_blob cb "
+                    "JOIN source_capture sc ON sc.content_blob_hash = cb.hash "
+                    "WHERE sc.metadata->>'ladder_step' IN "
+                    "('raw_html', 'screenshot', 'network_har')"
+                )
+            )
+            uris = [r[0] for r in blob_rows.fetchall()]
+            assert len(uris) >= 3  # at least one per acquisition rung
+
+            # No claims reference acquisition-observation ladder steps.
+            acq_claims = await s.scalar(
+                text(
+                    "SELECT count(*) FROM claim "
+                    "WHERE metadata->>'ladder_step' IN "
+                    "('raw_html', 'screenshot', 'network_har')"
+                )
+            )
+            assert acq_claims == 0
+    asyncio.run(run())
+
+
+@DB
+def test_content_captures_produce_evidence_and_claims():
+    """§38/§39: evidence rungs (extracted_text, rendered_dom, a11y_tree,
+    interactive_session) still produce evidence_unit→claim, asserts_private_truth=False."""
+    url = "https://allowed.example.com/a"
+
+    async def run():
+        await _reset()
+        inv = _make_investigator(har_authorized=True)
+        async with InvestigatorContext(
+            run_id="run_ev", task_id="task_ev", actor=_actor()
+        ) as ctx:
+            await inv.investigate(
+                ctx,
+                task_type="dom_reasoning",
+                query="hello",
+                target_urls=[url],
+                max_step=8,
+            )
+        async with async_session() as s:
+            # Claims from evidence rungs exist and are not private-truth.
+            rows = await s.execute(
+                text(
+                    "SELECT metadata->>'ladder_step' AS step, "
+                    "metadata->>'asserts_private_truth' AS apt "
+                    "FROM claim WHERE metadata ? 'ladder_step'"
+                )
+            )
+            evidence_claims = rows.mappings().all()
+            assert len(evidence_claims) >= 1
+            for c in evidence_claims:
+                assert c["step"] in (
+                    "extracted_text", "rendered_dom",
+                    "accessibility_tree", "interactive_session",
+                )
+                assert c["apt"] == "false"  # never source-of-truth (JSONB bool)
+    asyncio.run(run())
+
+
+@DB
+def test_durable_content_blob_storage_uri():
+    """§160/§D4: content_blob.storage_uri is non-null and resolvable via BlobStore."""
+    url = "https://allowed.example.com/a"
+
+    async def run():
+        await _reset()
+        inv = _make_investigator()
+        store = FilesystemBlobStore()
+        async with InvestigatorContext(
+            run_id="run_uri", task_id="task_uri", actor=_actor()
+        ) as ctx:
+            await inv.investigate(
+                ctx,
+                task_type="dom_reasoning",
+                query="hello",
+                target_urls=[url],
+                max_step=3,
+            )
+        async with async_session() as s:
+            rows = await s.execute(
+                text(
+                    "SELECT cb.storage_uri, cb.hash FROM content_blob cb "
+                    "JOIN source_capture sc ON sc.content_blob_hash = cb.hash "
+                    "WHERE sc.final_url = :u"
+                ),
+                {"u": url},
+            )
+            blobs = rows.mappings().all()
+            assert len(blobs) >= 1
+            for b in blobs:
+                assert b["storage_uri"] is not None
+                # The durable URI must resolve to the correct bytes.
+                assert await store.verify(b["storage_uri"], b["hash"]) is True
     asyncio.run(run())
 
 
