@@ -22,7 +22,7 @@ from dra.publish import (
     stage_derived_artifact,
     stage_evidence_unit,
     stage_gap,
-    stage_raw_capture,
+    stage_source_capture,
     stage_source_identity,
 )
 from tests._evidence import ACTOR, reset
@@ -102,10 +102,10 @@ async def build_paper_bundle(
             )
             acq = await create_activity(session, bundle_id, "acquisition", ACTOR)
 
-            raw_eid = await stage_raw_capture(
-                session, bundle_id, acq, MINIMAL_PDF_HASH, source_id,
+            raw_eid = await stage_source_capture(
+                session, bundle_id, acq, source_id, MINIMAL_PDF_HASH,
                 kind="pdf", mime_type="application/pdf",
-                size_bytes=len(MINIMAL_PDF), stored_at="/store/paper.pdf",
+                size_bytes=len(MINIMAL_PDF), final_url="/store/paper.pdf",
             )
             await add_prov_edge(
                 session, generated_entity_id=raw_eid, activity_id=acq,
@@ -159,8 +159,8 @@ async def build_paper_bundle(
                 metadata={"paper_version": PAPER_VERSION},
             )
             page_image_hash = content_hash(b"page-image-bytes")
-            page_img_eid = await stage_raw_capture(
-                session, bundle_id, acq, page_image_hash, source_id,
+            page_img_eid = await stage_source_capture(
+                session, bundle_id, acq, source_id, page_image_hash,
                 kind="image", mime_type="image/png", size_bytes=16,
                 metadata={"paper_version": PAPER_VERSION,
                           "element_type": "equation", "page": 1,

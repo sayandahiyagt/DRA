@@ -634,11 +634,13 @@ class WebsiteInvestigator:
         if content is None:
             content = ""
         raw_h = content_hash(content)
-        await ctx.stage_raw_capture(
+        await ctx.stage_source_capture(
+            source_id,
             raw_h,
-            source_id=source_id,
             kind=kind,
             mime_type=mime,
+            data=content.encode("utf-8") if isinstance(content, str) else content,
+            final_url=url,
             metadata={
                 "evidence_label": label,
                 "ladder_step": step,

@@ -39,6 +39,9 @@ EXPECTED_TABLES = [
     "gap",
     "handoff_statement",
     "user_assertion",
+    "content_blob",
+    "source_representation",
+    "source_capture",
 ]
 
 EXPECTED_ENUMS = {
@@ -79,9 +82,27 @@ EXPECTED_ENUMS = {
 # table -> a column that must appear in its primary key
 EXPECTED_PKS = {
     "raw_capture": "content_hash",       # content-addressed PK (ADR-004)
+    "content_blob": "hash",               # content-addressed PK (Wave 1a)
+    "source_capture": "capture_id",       # capture event PK (Wave 1a)
+    "source_representation": "id",        # representation PK (Wave 1a)
     "prov_entity": "id",
     "prov_generation": "entity_id",     # composite PK
     "prov_derivation": "derived_entity_id",  # composite PK
+
+    "derived_artifact": "id",
+    "evidence_unit": "id",
+    "implementation_entity": "id",
+    "claim": "id",
+    "decision": "id",
+    "gap": "id",
+    "handoff_statement": "id",
+    "topic": "id",
+    "topic_relationship": "id",
+    "prov_agent": "id",
+    "prov_bundle": "id",
+    "prov_activity": "id",
+    "source_identity": "id",
+    "user_assertion": "id",
 }
 
 # (src_table, src_col, tgt_table, tgt_col) key foreign keys that must exist
@@ -96,7 +117,7 @@ KEY_FKS = [
     ("prov_derivation", "source_entity_id", "prov_entity"),
     ("prov_derivation", "activity_id", "prov_activity"),
     ("raw_capture", "source_id", "source_identity"),
-    ("derived_artifact", "source_capture_hash", "raw_capture"),
+    ("derived_artifact", "source_capture_hash", "content_blob"),
     ("derived_artifact", "produced_by_activity", "prov_activity"),
     ("derived_artifact", "superseded_by", "derived_artifact"),
     ("evidence_unit", "artifact_id", "derived_artifact"),
@@ -124,6 +145,11 @@ KEY_FKS = [
     ("user_assertion", "disputed_claim_id", "claim"),
     ("user_assertion", "disputed_decision_id", "decision"),
     ("user_assertion", "disputed_source_id", "source_identity"),
+    # Wave 1a content/capture model FKs
+    ("source_representation", "content_blob_hash", "content_blob"),
+    ("source_capture", "source_identity_id", "source_identity"),
+    ("source_capture", "representation_id", "source_representation"),
+    ("source_capture", "content_blob_hash", "content_blob"),
 ]
 
 

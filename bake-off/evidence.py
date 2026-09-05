@@ -10,7 +10,7 @@ Grounded in the real ``dra.publish`` API (verified against publish.py):
   stage_bundle(run_id, task_id, label, actor) -> UUID
   create_activity(session, bundle_id, activity_type, actor, ...) -> UUID
   stage_source_identity(session, bundle_id, activity_id, kind, locator, ...) -> UUID
-  stage_raw_capture(session, bundle_id, activity_id, content_hash, source_id, kind, ...) -> UUID
+  stage_source_capture(session, bundle_id, activity_id, source_id, content_hash, kind, *, blob_store, data, ..., final_url, ...) -> UUID
   stage_implementation_entity(session, bundle_id, activity_id, repo_source_id, kind, *, path, ...) -> UUID
   stage_derived_artifact(session, bundle_id, activity_id, source_capture_hash, content_hash, kind, version, ...) -> UUID
   stage_evidence_unit(session, bundle_id, activity_id, artifact_id, locator, ...) -> UUID
@@ -41,7 +41,7 @@ from dra.publish import (
     stage_bundle,
     create_activity,
     stage_source_identity,
-    stage_raw_capture,
+    stage_source_capture,
     stage_implementation_entity,
     stage_derived_artifact,
     stage_evidence_unit,
@@ -280,17 +280,11 @@ async def _get_or_create_source_identity(
 ) -> UUID:
     """Reuse a source_identity by (locator, version), else create one.
 
-    ``source_identity.locator,version`` is uniquely constrained, so two runs
-    pointing at the same corpus path must share one source row (raw_capture is
-    content-addressed via ON CONFLICT, so sharing the source stays consistent).
+    ``source_identity`` now uses a concurrency-safe get-or-create on
+    ``normalized_key`` (kind:locator:version), so two runs pointing at the same
+    corpus path share one source row.  The shared source stays consistent with
+    the content-addressed content_blob that backs the source_capture.
     """
-    loc = str(corpus_dir)
-    row = await session.execute(
-        text("SELECT id FROM source_identity WHERE locator = :loc AND version = 'bakeoff-corpus'"),
-        {"loc": loc})
-    existing = row.scalar_one_or_none()
-    if existing is not None:
-        return existing
     return await stage_source_identity(
         session, bundle_id, act_id, "repo", str(corpus_dir), version="bakeoff-corpus",
         state="staged", license_spdx="CC0-1.0", access_basis="public",
@@ -302,23 +296,23 @@ async def _get_or_create_source_identity(
 async def _stage_recon(
     session, bundle_id: UUID, act_id: UUID, corpus_dir: Path
 ) -> dict[str, Any]:
-    """Stage the corpus snapshot as raw_capture + source_identity (recon).
+    """Stage the corpus snapshot as source_capture + source_identity (recon).
 
-    Idempotent: if this bundle already carries a raw_capture, the existing
+    Idempotent: if this bundle already carries a source_capture, the existing
     source_id/raw_hash/raw_eid are returned unchanged (resume-safe). Across
-    runs the content-addressed raw_capture (ON CONFLICT) + shared
-    source_identity (by locator,version) prevent UNIQUE-key collisions.
+    runs the content-addressed content_blob (ON CONFLICT DO NOTHING) + shared
+    source_identity (get-or-create) prevent UNIQUE-key collisions.
     """
     existing = await session.execute(
-        text("SELECT pe.id, rc.source_id, rc.content_hash "
-             "FROM prov_entity pe JOIN raw_capture rc "
-             "ON rc.content_hash = pe.content_hash "
+        text("SELECT pe.id, sc.content_blob_hash, sc.source_identity_id "
+             "FROM prov_entity pe JOIN source_capture sc "
+             "ON sc.capture_id = pe.id "
              "WHERE pe.bundle_id = :b AND pe.entity_kind = 'raw_capture'"),
         {"b": str(bundle_id)},
     )
     row = existing.fetchone()
     if row is not None:
-        return {"source_id": row[1], "raw_hash": str(row[2]), "raw_eid": row[0]}
+        return {"source_id": row[2], "raw_hash": str(row[1]), "raw_eid": row[0]}
 
     corpus_dir = Path(corpus_dir)
     file_hashes = {}
@@ -328,9 +322,9 @@ async def _stage_recon(
     raw_hash = sha256(tree_bytes).hexdigest()
 
     src = await _get_or_create_source_identity(session, bundle_id, act_id, corpus_dir)
-    raw_eid = await stage_raw_capture(
-        session, bundle_id, act_id, raw_hash, src, "repo_snapshot",
-        size_bytes=len(tree_bytes), stored_at=str(corpus_dir),
+    raw_eid = await stage_source_capture(
+        session, bundle_id, act_id, src, raw_hash, "repo_snapshot",
+        size_bytes=len(tree_bytes), data=tree_bytes, final_url=str(corpus_dir),
         state="staged", metadata={"fanout_worker": 0},
     )
     await add_prov_edge(session, generated_entity_id=raw_eid, activity_id=act_id)

@@ -848,9 +848,14 @@ async def _stage_capture_point(
         redist_allowed=True,
         metadata={"auto": True, "control_plane_kind": source_kind},
     )
-    raw_eid = await ctx.stage_raw_capture(
-        raw_hash, src, "text", mime_type="text/plain",
-        size_bytes=len(raw_bytes), stored_at=locator,
+    raw_eid = await ctx.stage_source_capture(
+        src,
+        raw_hash,
+        "text",
+        mime_type="text/plain",
+        size_bytes=len(raw_bytes),
+        data=raw_bytes,
+        final_url=locator,
         metadata={"captured_by": "control_plane.recon"},
     )
     return {"source_id": str(src), "raw_hash": raw_hash, "evidence_id": str(raw_eid)}

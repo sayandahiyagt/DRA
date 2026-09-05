@@ -23,17 +23,20 @@ __all__ = [
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_LABEL",
     "CANONICAL_SIGNATURE_V1",
+    "CANONICAL_SIGNATURE_V2",
     "V1_EXPECTED_TABLES",
+    "V2_EXPECTED_TABLES",
     "V1_EXPECTED_ENUMS",
     "canonical_v1_signature",
+    "canonical_v2_signature",
     "current_schema_version",
 ]
 
 # The Wave 0 canonical schema version (frozen at HEAD 5272ffdad267):
 #   0001_enable_pgvector -> ... -> 0008_interview_constraints (merge of the
 #   0007 double-head) -> 0009_knowledge_schema_baseline (this migration).
-SCHEMA_VERSION: int = 1
-SCHEMA_VERSION_LABEL: str = "v1"
+SCHEMA_VERSION: int = 2
+SCHEMA_VERSION_LABEL: str = "v2"
 
 # Frozen v1 canonical object set. This is the exact enumeration asserted by
 # ``tests/test_schema_introspection.py`` (including the 0007
@@ -60,6 +63,15 @@ V1_EXPECTED_TABLES: list[str] = [
     "gap",
     "handoff_statement",
     "user_assertion",
+]
+
+# Wave 1a (dra#78): the v2 canonical object set adds the content/capture model
+# tables on top of the frozen v1 set.  Enums are unchanged (no new enum values),
+# so V1_EXPECTED_ENUMS is reused for the v2 signature computation.
+V2_EXPECTED_TABLES: list[str] = V1_EXPECTED_TABLES + [
+    "content_blob",
+    "source_representation",
+    "source_capture",
 ]
 
 V1_EXPECTED_ENUMS: dict[str, list[str]] = {
@@ -100,13 +112,23 @@ CANONICAL_SIGNATURE_V1: str = (
     "51242702e1e6b1d570c886500234a43eec81cd1d72211c5e254868afde18aacb"
 )
 
+# Precomputed digest of the v2 object set (V1 tables + the three Wave 1a
+# content/capture tables).  Mirrors the seed inserted by ``0010_
+# source_capture_model``; ``tests/test_schema_baseline.py`` asserts the DB row
+# matches.
+CANONICAL_SIGNATURE_V2: str = (
+    "60123f40db96eed5780c84289494c0286dd8d513692f1ce56e1d6a52eebed5ac"
+)
 
-def _object_set_payload() -> bytes:
-    """Stable JSON encoding of the frozen v1 object set (sorted)."""
+
+def _object_set_payload(tables: list[str]) -> bytes:
+    """Stable JSON encoding of a canonical object set (sorted)."""
     return json.dumps(
         {
-            "tables": sorted(V1_EXPECTED_TABLES),
-            "enums": {name: sorted(values) for name, values in V1_EXPECTED_ENUMS.items()},
+            "tables": sorted(tables),
+            "enums": {
+                name: sorted(values) for name, values in V1_EXPECTED_ENUMS.items()
+            },
         },
         sort_keys=True,
     ).encode("utf-8")
@@ -119,7 +141,18 @@ def canonical_v1_signature() -> str:
     with this same digest; ``tests/test_schema_baseline.py`` asserts the DB row
     matches, locking the accessor against the migration seed.
     """
-    return hashlib.sha256(_object_set_payload()).hexdigest()
+    return hashlib.sha256(_object_set_payload(V1_EXPECTED_TABLES)).hexdigest()
+
+
+def canonical_v2_signature() -> str:
+    """SHA-256 digest of the v2 canonical object set.
+
+    The v2 set is ``V1_EXPECTED_TABLES`` plus the three Wave 1a tables
+    (``content_blob``, ``source_representation``, ``source_capture``).
+    Migration 0010 seeds ``knowledge_schema_version`` with this digest;
+    ``tests/test_schema_baseline.py`` asserts the DB row matches.
+    """
+    return hashlib.sha256(_object_set_payload(V2_EXPECTED_TABLES)).hexdigest()
 
 
 async def current_schema_version(session: Any) -> tuple[int, str]:
