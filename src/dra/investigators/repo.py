@@ -5,7 +5,7 @@ Ingests a repository source — a local on-disk path (tests) or a remote URL
 — and emits normalized evidence units with ``repo@commit:path:symbol`` locators.
 
 Staging flow (single atomic :class:`InvestigatorContext` bundle):
-source_identity(repo) -> raw_capture(repo_snapshot) ->
+source_identity(repo) -> source_capture(repo_snapshot) ->
 derived_artifact(symbol_index) -> evidence_unit + implementation_entity rows
 -> behavioral claim.  :class:`InvestigatorContext.__aexit__` publishes the
 bundle (staged->canonical, ADR-013) on clean exit.
@@ -179,7 +179,7 @@ def _make_snapshot(repo_path: str) -> tuple[bytes, str]:
     and a sorted file walk, so the content hash is a deterministic function of
     the tree — re-running on an unchanged repo yields an identical
     ``content_hash`` (idempotent re-runs per the substrate's ``ON CONFLICT``
-    raw_capture PK).
+    content_blob.hash PK).
     """
     tar_stream = _build_tar_bytes(repo_path)
     gz_stream = _gzip(tar_stream)

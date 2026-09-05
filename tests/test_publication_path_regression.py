@@ -9,9 +9,12 @@ contract and the state-flip invariant explicitly rather than relying on a
 coincidental equality.
 
 Contract under test (src/dra/publish.py):
-  - ``_DOMAIN_STATE_TABLES`` (raw_capture, source_capture, derived_artifact,
-    evidence_unit, implementation_entity, claim) flip their own ``state`` column
-    to ``'canonical'`` via ``_mirror_state_canonical``.
+  - ``_DOMAIN_STATE_TABLES`` (source_capture, derived_artifact, evidence_unit,
+    implementation_entity, claim) flip their own ``state`` column to ``'canonical'``
+    via ``_mirror_state_canonical``.  ``raw_capture`` is no longer a mirrored
+    domain table after Wave 1c — readers resolve the ContentBlob -> SourceCapture
+    -> SourceIdentity chain instead.  (The Wave 1a backward-compat ``raw_capture``
+    shim row is still written by ``stage_source_capture`` but is not mirrored.)
   - ``_STANDALONE_STATE_TABLES`` (``user_assertion``) is flipped separately and
     is untouched by a non-standalone (lineage) bundle.
 """
@@ -32,12 +35,11 @@ from dra.publish import (
     stage_user_assertion,
 )
 from tests._db import DB
-from tests._evidence import build_implementation_bundle, build_lineage_bundle, reset
+from tests._evidence import RAW_HASH, build_implementation_bundle, build_lineage_bundle, reset
 
 pytestmark = DB
 
 _DOMAIN_STATE_TABLES = (
-    "raw_capture",
     "source_capture",
     "derived_artifact",
     "evidence_unit",
@@ -59,7 +61,8 @@ def test_publishes_exactly_canonical_domain_entities():
         bundle_id, _ids = await build_lineage_bundle()
         published = await publish_bundle(bundle_id)
 
-        # raw/derived/evidence/claim/decision/handoff — one prov_entity each.
+        # source_capture/derived/evidence/claim/decision/handoff — one prov_entity
+        # each (the capture's prov_entity is entity_kind='raw_capture').
         assert published == 6
 
         async with async_session() as session:
@@ -87,14 +90,15 @@ def test_domain_rows_flip_to_canonical():
     to 'canonical' (the ``_mirror_state_canonical`` contract), and the standalone
     ``user_assertion`` path is untouched by a non-standalone bundle.
 
-    ``build_lineage_bundle`` stages raw_capture/source_capture, derived_artifact,
+    ``build_lineage_bundle`` stages source_capture, derived_artifact,
     evidence_unit and claim — the four domains reachable through the §21.2
-    provenance chain.  ``implementation_entity`` is covered separately by
-    :func:`test_implementation_entity_flips_to_canonical` via
-    ``build_implementation_bundle`` (it is not part of a plain lineage bundle).
+    provenance chain (the capture's prov_entity is ``entity_kind='raw_capture'``
+    and is mirrored via ``source_capture``).  ``implementation_entity`` is
+    covered separately by :func:`test_implementation_entity_flips_to_canonical`
+    via ``build_implementation_bundle`` (it is not part of a plain lineage
+    bundle).
     """
     staged_domains = (
-        "raw_capture",
         "source_capture",
         "derived_artifact",
         "evidence_unit",
@@ -107,12 +111,14 @@ def test_domain_rows_flip_to_canonical():
 
         async with async_session() as session:
             for table in staged_domains:
-                if table == "raw_capture":
-                    join = "pe.content_hash = t.content_hash"
-                elif table == "source_capture":
+                if table == "source_capture":
+                    # prov_entity entity_kind for a capture is 'raw_capture';
+                    # source_capture.capture_id reuses that prov_entity UUID.
                     join = "pe.id = t.capture_id"
+                    kind = "raw_capture"
                 else:
                     join = "pe.id = t.id"
+                    kind = table
                 n = await session.scalar(
                     text(
                         f"SELECT count(*) FROM {table} t "
@@ -122,10 +128,17 @@ def test_domain_rows_flip_to_canonical():
                         "AND pe.state = 'canonical' "
                         f"AND {join} AND t.state = 'canonical'"
                     ),
-                    {"kind": "raw_capture" if table in ("raw_capture", "source_capture") else table,
-                     "b": str(bundle_id)},
+                    {"kind": kind, "b": str(bundle_id)},
                 )
                 assert n >= 1, f"{table} did not flip to canonical"
+
+            # The capture's content-addressed blob exists for the staged hash
+            # (content_blob is the deduplication root, ON CONFLICT on hash).
+            cb = await session.scalar(
+                text("SELECT count(*) FROM content_blob WHERE hash = :h"),
+                {"h": RAW_HASH},
+            )
+            assert cb == 1, "content_blob for staged raw capture missing"
 
             # The standalone user_assertion table must be untouched by a lineage
             # (non-standalone) bundle: no rows, no state mutation.

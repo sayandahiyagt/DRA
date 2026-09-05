@@ -275,10 +275,14 @@ async def stage_source_capture(
 
     Replaces the deprecated ``stage_raw_capture``: routes bytes through a
     :class:`~dra.storage.BlobStore` and a ``ContentBlob`` (deduped by sha256)
-    referenced by a new ``SourceCapture`` row, while *also* writing a backward-
-    compatible ``raw_capture`` row so existing readers (knowledge.py,
-    verification_gate.py, handoff.py) keep working during the deprecation
-    window.
+    referenced by a new ``SourceCapture`` row.  A backward-compatible
+    ``raw_capture`` row is *also* written (Wave 1a deprecation window) for the
+    legacy existence checks in ``tests/test_storage_blob.py`` and
+    ``tests/test_website_investigator.py``; all canonical evidence-graph readers
+    (knowledge.py, verification_gate.py, handoff.py, publish.py
+    ``_DOMAIN_STATE_TABLES``) now resolve the ContentBlob -> SourceCapture ->
+    SourceIdentity chain instead.  Removing the shim is the optional follow-up
+    once those legacy test assertions land on the new tables.
 
     The provenance ``prov_entity`` is created with ``entity_kind='raw_capture'``
     (no new enum value — preserves the dra#14 byte-stability contract) and its
@@ -351,9 +355,12 @@ async def stage_source_capture(
         },
     )
 
-    # 4. Backward-compatible raw_capture row (deprecated, kept for readers that
-    #    still JOIN through raw_capture).  stored_at is marked obsolete — prefer
-    #    content_blob.storage_uri for durable location.
+    # 4. Backward-compatible raw_capture row (Wave 1a deprecation window).  All
+    #    canonical evidence-graph readers now resolve ContentBlob -> SourceCapture
+    #    -> SourceIdentity, so this shim exists only to keep the legacy
+    #    existence-check tests (test_storage_blob, test_website_investigator)
+    #    green until they are migrated to the new tables; stored_at is marked
+    #    obsolete — prefer content_blob.storage_uri for durable location.
     await session.execute(
         text(
             "INSERT INTO raw_capture (content_hash, source_id, kind, "
@@ -470,7 +477,7 @@ async def stage_implementation_entity(
     investigator.  It is a lineage-domain table with its own ``state`` column
     (added by ``0005_implementation_entity_state``) so it participates in the
     staged->canonical atomic commit (ADR-013) like
-    raw_capture / derived_artifact / evidence_unit / claim.
+    source_capture / derived_artifact / evidence_unit / claim.
 
     The primary key is ``id`` (a UUID prov_entity mirror), NOT ``content_hash``,
     so there is no ``ON CONFLICT`` upsert — a plain INSERT matches the
@@ -1016,7 +1023,6 @@ async def _publish_bundle_tx(session: AsyncSession, bundle_id: UUID) -> int:
         canonical_count += 1
 
     # 3. Idempotent transition: flip staged->canonical for valid rows.
-    #    raw_capture uses content_hash PK (ON CONFLICT handled at staging),
     #    versioned tables rely on their UNIQUE(content_hash,kind,version).
     result = await session.execute(
         text(
@@ -1030,8 +1036,11 @@ async def _publish_bundle_tx(session: AsyncSession, bundle_id: UUID) -> int:
     updated = result.rowcount or 0
 
     # 4. Mirror the state transition onto the domain tables that carry their
-    #    own ``state`` column (raw_capture, derived_artifact, evidence_unit,
+    #    own ``state`` column (source_capture, derived_artifact, evidence_unit,
     #    claim) so canonical status is queryable at the domain level too.
+    #    (raw_capture is written by stage_source_capture as a backward-compat
+    #    shim but is no longer mirrored — it carries no canonical-state contract
+    #    for readers after Wave 1c.)
     await _mirror_state_canonical(session, bundle_id)
 
     # 4b. Flip standalone supporting tables (user_assertion) that carry their
@@ -1095,12 +1104,16 @@ async def _validate_entity_links(session: AsyncSession, entity_id: UUID, kind: s
         )
 
 
-# (domain_table, entity_kind, join_clause) — raw_capture is content-addressed
-# (PK = content_hash), so it joins prov_entity on content_hash rather than id.
-# source_capture reuses the prov_entity UUID as its capture_id (set by
-# stage_source_capture), joining on pe.id — the authoritative Wave 1a link.
+# (domain_table, entity_kind, join_clause) — raw_capture is the legacy
+# content-addressed capture table (PK = content_hash per ADR-004).  During the
+# Wave 1a deprecation window stage_source_capture still writes a backward-compat
+# raw_capture row, but it is NOT a mirrored canonical-state table here: the
+# authoritative capture-domain row is ``source_capture`` (capture_id reuses the
+# prov_entity UUID set by stage_source_capture), so it joins on ``pe.id`` like
+# the other UUID-PK domain tables.  ``content_blob`` is a content-addressed
+# supporting table (no prov_entity row / state column) and is therefore NOT
+# mirrored here.
 _DOMAIN_STATE_TABLES = (
-    ("raw_capture",       "raw_capture",       "pe.content_hash = raw_capture.content_hash"),
     ("source_capture",    "raw_capture",       "pe.id = source_capture.capture_id"),
     ("derived_artifact",  "derived_artifact",  "pe.id = derived_artifact.id"),
     ("evidence_unit",     "evidence_unit",     "pe.id = evidence_unit.id"),
@@ -1120,11 +1133,14 @@ async def _mirror_state_canonical(session: AsyncSession, bundle_id: UUID) -> Non
     """Mirror prov_entity.state to each domain table's own ``state`` column.
 
     Each domain table's primary key equals the matching prov_entity column
-    (its UUID id, except raw_capture whose PK is ``content_hash``). Joining on
-    (entity_kind, bundle_id, state) flips only this bundle's validated rows.
-    ``source_capture`` reuses the prov_entity UUID as ``capture_id`` (set by
-    :func:`stage_source_capture`), so it joins on ``pe.id`` like the other UUID-
-    PK domain tables.
+    (the prov_entity UUID ``id``). ``source_capture`` reuses that UUID as its
+    ``capture_id`` (set by :func:`stage_source_capture`), so it joins on
+    ``pe.id`` like the other UUID-PK domain tables.  (``raw_capture`` is written
+    by :func:`stage_source_capture` as a backward-compat shim — its
+    ``content_hash`` PK is content-addressed — but is intentionally NOT mirrored
+    here: it carries no canonical-state contract for readers after Wave 1c.)
+    Joining on (entity_kind, bundle_id, state) flips only this bundle's validated
+    rows.
     """
     for table, kind, join in _DOMAIN_STATE_TABLES:
         await session.execute(

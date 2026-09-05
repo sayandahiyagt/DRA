@@ -516,7 +516,7 @@ class VisualReviewer:
     """§16.2 critical-content verification engine.
 
     For each implementation-critical element (equation/table/figure), renders
-    the page image, stages it as ``raw_capture(kind="image")``, compares the
+    the page image, stages it as ``source_capture(kind="image")``, compares the
     GROBID and Docling excerpts, and creates a ``gap`` entity when parsers
     disagree or confidence is low.
     """
@@ -747,7 +747,7 @@ class PaperInvestigator:
     ) -> InvestigationResult:
         """Run the full paper investigation pipeline and publish atomically.
 
-        1. Stage ``source_identity`` (kind="paper") + ``raw_capture`` (kind="pdf").
+        1. Stage ``source_identity`` (kind="paper") + ``source_capture`` (kind="pdf").
         2. Create a ``visual_review`` ``prov_activity``.
         3. Run the dual parser (GROBID + Docling, ADR-009).
         4. Stage ``grobid_tei`` and ``docling_document`` derived artifacts.

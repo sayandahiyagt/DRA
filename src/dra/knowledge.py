@@ -145,8 +145,9 @@ async def _by_decision(session: Any, run_id: str, decision_id: UUID) -> dict[str
                 "LEFT JOIN claim cl ON cl.id=d.claim_id "
                 "LEFT JOIN evidence_unit eu ON eu.id=cl.evidence_unit_id "
                 "LEFT JOIN derived_artifact da ON da.id=eu.artifact_id "
-                "LEFT JOIN raw_capture rc ON rc.content_hash=da.source_capture_hash "
-                "LEFT JOIN source_identity si ON si.id=rc.source_id "
+                "LEFT JOIN content_blob cb ON cb.hash = da.source_capture_hash "
+                "LEFT JOIN source_capture sc ON sc.content_blob_hash = cb.hash "
+                "LEFT JOIN source_identity si ON si.id = sc.source_identity_id "
                 "WHERE d.id = :did LIMIT 1"
             ),
             {"r": run_id, "did": str(decision_id)},
@@ -658,9 +659,9 @@ async def retrieve_context_bundle(
     :class:`ValueError` if zero or more than one key is supplied.
 
     The retrieval is linkage-based over the canonical evidence tables
-    (decision/claim/evidence_unit/derived_artifact/raw_capture/source_identity/
-    implementation_entity/topic/gap) — there is NO vector-corpus scan (dra#15).
-    Every query is filtered on ``prov_bundle.run_id = :run_id`` so cross-run
+    (decision/claim/evidence_unit/derived_artifact/source_capture/content_blob/
+    source_identity/implementation_entity/topic/gap) — there is NO vector-corpus
+    scan (dra#15). Every query is filtered on ``prov_bundle.run_id = :run_id`` so cross-run
     knowledge is excluded (ADR-016).
     """
     if len(by) != 1:

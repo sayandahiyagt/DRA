@@ -6,7 +6,7 @@ comparison logic, and PDF page rendering.  These run in any environment.
 
 DB-gated tests stage a fixture PDF capture, run the dual-parser pipeline
 with ``ParserMode.OFFLINE`` (fake parsers, no GROBID server, no model
-weights), and publish atomically — asserting raw_capture, derived artifacts,
+weights), and publish atomically — asserting source_capture, derived artifacts,
 evidence units with paper locators, gap creation on parser disagreement,
 and the §21.2 provenance lineage chain.  DB-gated tests SKIP when Postgres
 is unreachable (env concern, not a code defect).
@@ -308,7 +308,7 @@ class TestCriticalElementTypes:
 
 @DB
 def test_paper_investigator_stages_raw_pdf_capture():
-    """Stage a fixture PDF, assert raw_capture with kind='pdf' exists."""
+    """Stage a fixture PDF, assert source_capture with kind='pdf' exists."""
 
     async def run():
         await reset()
@@ -321,8 +321,9 @@ def test_paper_investigator_stages_raw_pdf_capture():
         async with async_session() as s:
             row = await s.execute(
                 text(
-                    "SELECT kind FROM raw_capture "
-                    "WHERE content_hash = :h"
+                    "SELECT sc.kind FROM source_capture sc "
+                    "JOIN content_blob cb ON sc.content_blob_hash = cb.hash "
+                    "WHERE cb.hash = :h"
                 ),
                 {"h": MINIMAL_PDF_HASH},
             )
@@ -398,7 +399,7 @@ def test_paper_investigator_publishes_atomically():
     Asserts:
     - published_count >= 8
     - No staged entities remain (state='canonical' for all)
-    - Provenance traversal: evidence_unit -> derived_artifact -> raw_capture -> source_identity
+    - Provenance traversal: evidence_unit -> derived_artifact -> source_capture -> source_identity
     - Paper locator shape present in evidence_unit.locator
     """
 
@@ -422,12 +423,13 @@ def test_paper_investigator_publishes_atomically():
 
             traversal = await s.execute(
                 text(
-                    "SELECT si.locator, si.kind, rc.kind as raw_kind "
+                    "SELECT si.locator, si.kind, sc.kind as raw_kind "
                     "FROM evidence_unit eu "
                     "JOIN prov_entity pe ON pe.id = eu.id "
                     "JOIN derived_artifact da ON da.id = eu.artifact_id "
-                    "JOIN raw_capture rc ON rc.content_hash = da.source_capture_hash "
-                    "JOIN source_identity si ON si.id = rc.source_id "
+                    "JOIN content_blob cb ON cb.hash = da.source_capture_hash "
+                    "JOIN source_capture sc ON sc.content_blob_hash = cb.hash "
+                    "JOIN source_identity si ON si.id = sc.source_identity_id "
                     "WHERE pe.bundle_id = :b"
                 ),
                 {"b": str(result.bundle_id)},
@@ -436,7 +438,7 @@ def test_paper_investigator_publishes_atomically():
             assert len(rows) >= 1
             for row in rows:
                 assert row[1] == "paper"  # source_identity.kind
-                assert row[2] == "pdf"  # raw_capture.kind
+                assert row[2] == "pdf"  # source_capture.kind
 
     asyncio.run(run())
 
@@ -447,7 +449,7 @@ def test_paper_investigator_creates_gap_on_disagreement():
 
     - A gap entity (entity_kind='gap', gap_severity='critical') exists
     - A visual_review prov_activity exists
-    - The page image raw_capture (kind='image') exists
+    - The page image source_capture (kind='image') exists
     """
 
     async def run():
@@ -482,11 +484,12 @@ def test_paper_investigator_creates_gap_on_disagreement():
 
             image_row = await s.execute(
                 text(
-                    "SELECT content_hash FROM raw_capture "
-                    "WHERE source_id IN ("
+                    "SELECT cb.hash FROM content_blob cb "
+                    "JOIN source_capture sc ON sc.content_blob_hash = cb.hash "
+                    "WHERE sc.source_identity_id IN ("
                     "  SELECT id FROM source_identity WHERE locator = :loc "
                     "  AND version = :ver"
-                    ") AND kind = 'image'"
+                    ") AND sc.kind = 'image'"
                 ),
                 {"loc": PAPER_LOCATOR, "ver": PAPER_VERSION},
             )

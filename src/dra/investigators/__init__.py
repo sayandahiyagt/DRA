@@ -2,8 +2,8 @@
 
 Provides the single way all investigators capture evidence:
 
-- :func:`content_hash` — sha256 hex helper (raw_capture PK and
-  evidence_unit.content_hash, ADR-004).
+- :func:`content_hash` — sha256 hex helper (content_blob hash, the
+  content-addressed dedupe root, plus evidence_unit.content_hash, ADR-004).
 - :data:`LOCATOR_SHAPES` — constantized spec §13.4 locator field sets per
   source kind so every investigator emits consistent locators.
 - :func:`normalize_locator` / :func:`validate_locator` — pure helpers that

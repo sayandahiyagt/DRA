@@ -5,7 +5,7 @@ method, a top-level function, a ``main`` entry point, a ``__main__`` guard, an
 import, a ``pyproject.toml`` with a console-script entry point, a ``LICENSE``
 (MIT), and a submodule-bearing lockfile (``uv.lock``).  It returns
 ``(repo_path, commit_sha, toplevel)`` so DB-gated tests can assert canonical
-publication and a provenance traversal back to the committed raw_capture and
+publication and a provenance traversal back to the committed source_capture and
 source_identity.
 """
 

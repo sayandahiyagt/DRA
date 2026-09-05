@@ -1155,7 +1155,7 @@ async def p10(state: dict[str, Any]) -> dict[str, Any]:
             asdict(
                 ResearchGap(
                     gap_id="gap:1",
-                    description="No content-addressed evidence was staged (no canonical raw_capture).",
+                    description="No content-addressed evidence was staged (no canonical source_capture).",
                     severity="high",
                     impact=2,
                     blocking=True,
@@ -1204,7 +1204,7 @@ def _first_repo_ref(state: dict[str, Any]) -> str | None:
 
 def _reresearch_salt(gap: dict[str, Any], round_num: int) -> bytes:
     """Deterministic bytes payload for the capture fallback (researched from the
-    gap id + round, so re-runs are content-addressed and dedupe on raw_capture)."""
+    gap id + round, so re-runs are content-addressed and dedupe on content_blob)."""
     return f"dra-control-plane:reresearch:{gap.get('gap_id')}:{round_num}".encode()
 
 
